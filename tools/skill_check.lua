@@ -387,18 +387,20 @@ check("6 list fades in one after another", function()
   for i, r in ipairs(rows) do
     assert(r:EffectiveAlpha() < 0.05, "row " .. i .. " did not start invisible: alpha " .. r:EffectiveAlpha())
   end
-  local started, alphas = {}, { {}, {}, {}, {}, {} }
-  for step = 1, 240 * 2 do
+  -- Every frame for 2.5 s: once a row starts, it never dims below the most it
+  -- has shown. Its fade, for the middle-of-travel rule, runs from its start
+  -- until it first reaches full alpha.
+  local started, peak, alphas = {}, {}, { {}, {}, {}, {}, {} }
+  for step = 1, 240 * 2.5 do
     run(1 / 240, 240)
     for i, r in ipairs(rows) do
       local alpha = look(r)[1]
       if not started[i] and alpha > 0.02 then started[i] = step end
-      -- A row's fade runs from its start until it first reaches full alpha.
-      local a = alphas[i]
-      if started[i] and not (a[#a] and a[#a] >= 0.99) then
-        -- Rows only fade in: no dip below what they already showed.
-        if a[#a] then assert(alpha > a[#a] - 0.05, "row " .. i .. " dimmed while fading in") end
-        a[#a + 1] = alpha
+      if started[i] then
+        local a = alphas[i]
+        if not (a[#a] and a[#a] >= 0.99) then a[#a + 1] = alpha end
+        peak[i] = math.max(peak[i] or 0, alpha)
+        assert(alpha > peak[i] - 0.05, ("row %d dimmed%s"):format(i, a[#a] >= 0.99 and " after fading in" or " while fading in"))
       end
     end
   end
@@ -409,7 +411,6 @@ check("6 list fades in one after another", function()
   for i = 2, 5 do
     assert(started[i] > started[i - 1], ("row %d started with or before row %d"):format(i, i - 1))
   end
-  run(0.5)
   for i, r in ipairs(rows) do
     assert(near(look(r)[1], 1), "row " .. i .. " not fully visible at the end")
   end
