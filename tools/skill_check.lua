@@ -273,13 +273,15 @@ check("4 hover button sits at TOPLEFT (10, -10) and grows around its center", fu
     return true
   end
   local n, samples, jump = transition(b, function() b.scripts.OnEnter(b) end, 1, SIZE)
-  assert(n >= ANIMATED and jump < SMOOTH, "did not animate growing")
+  assert(n >= ANIMATED, "did not animate growing")
+  assert(jump < SMOOTH, ("jumped %.1f while growing"):format(jump))
   assert(centered(samples), "center moved while growing")
   l, bottom, w, h = b:Rect()
   assert(near(w, 46) and near(h, 46), "drawn " .. w .. " wide on hover, want 46")
   assert(near(l + w / 2, cx) and near(bottom + h / 2, cy), "center moved while growing")
   n, samples, jump = transition(b, function() b.scripts.OnLeave(b) end, 1, SIZE)
-  assert(n >= ANIMATED and jump < SMOOTH, "did not animate shrinking")
+  assert(n >= ANIMATED, "did not animate shrinking")
+  assert(jump < SMOOTH, ("jumped %.1f while shrinking"):format(jump))
   assert(centered(samples), "center moved while shrinking")
   assert(same(look(b), before), "not back to its first size and place after leave")
 end)
