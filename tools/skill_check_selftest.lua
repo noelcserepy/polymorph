@@ -26,8 +26,8 @@ local cases = {
   { "rows 1 to 4 together", "row 2 started with or before row 1", { 'delay = (i - 1) * 0.05', 'delay = i == 5 and 0.12 or 0' } },
   { "rows appear at once", "row 1 did not fade in", { 'duration = 0.3, delay', 'duration = 0, delay' } },
   { "bar first heads the wrong way", "width 300, want 100", { 'Poly(bar):to({ width = 200 * fraction })', 'Poly(bar):to({ width = fraction == 0.5 and 300 or 200 * fraction })' } },
-  { "hover grows at once behind a fade", "did not animate growing", { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):set({ scale = 1.15, alpha = 0 }):to({ alpha = 1 }, { duration = 0.2 })' } },
-  { "hover shrinks at once behind a fade", "did not animate shrinking", { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):set({ scale = 1, alpha = 0 }):to({ alpha = 1 }, { duration = 0.2 })' } },
+  { "hover grows at once behind a fade", "disappeared while growing", { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):set({ scale = 1.15, alpha = 0 }):to({ alpha = 1 }, { duration = 0.2 })' } },
+  { "hover shrinks at once behind a fade", "disappeared while shrinking", { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):set({ scale = 1, alpha = 0 }):to({ alpha = 1 }, { duration = 0.2 })' } },
   { "round 2 agent answer: rows start fading at once", true, { 'delay = (i - 1) * 0.05', 'delay = (i - 1) * 0.04' , 'duration = 0.3, delay', 'duration = 0.2, delay' } },
   { "toast fades in still, then jumps into place", "did not slide in from above", { 'Poly(toast):show("above", { spring = "stiff" })', 'Poly(toast):show("above", { spring = "stiff" }); Poly(toast):to({ y = 0 }, { duration = 0, delay = 0.1 })' } },
   { "toast fades out still, then jumps up", "did not slide out upward", { 'Poly(toast):hide("above")', 'Poly(toast):hide("above"); Poly(toast):to({ y = 16 }, { duration = 0, delay = 0.1 })' } },
@@ -73,6 +73,8 @@ local cases = {
   { "bar hides mid-animation", "disappeared to 100", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }); if fraction == 0.5 then C_Timer.After(0.1, function() bar:Hide() end); C_Timer.After(0.2, function() bar:Show() end) end end' } },
   { "secure panel flashes back while fading", "came back while closing in combat", { 'Poly(panel):hide("fade", { duration = 0.2 })', 'Poly(panel):hide("fade", { duration = 0.2 }); C_Timer.After(0.4, function() panel:SetAlpha(1); C_Timer.After(0.05, function() panel:SetAlpha(0) end) end)' } },
   { "rows dip while fading in", "row 1 dimmed while fading in", { 'duration = 0.3, delay', 'ease = function(p) if p > 0.4 and p < 0.5 then return 0.1 end return p end, duration = 0.3, delay' } },
+  { "hover hides at the call, returns mid-growth", "disappeared while growing", { 'b:SetScript("OnEnter", function(self) Poly(self):to({ scale = 1.15 }, { spring = "stiff" }) end)', 'b:SetScript("OnEnter", function(self) self:Hide(); Poly(self):to({ scale = 1.15 }, { duration = 0.2 }); C_Timer.After(0.1, function() self:Show() end) end)' } },
+  { "hover hides at the call, returns mid-shrink", "disappeared while shrinking", { 'b:SetScript("OnLeave", function(self) Poly(self):to({ scale = 1 }, { spring = "stiff" }) end)', 'b:SetScript("OnLeave", function(self) self:Hide(); Poly(self):to({ scale = 1 }, { duration = 0.2 }); C_Timer.After(0.1, function() self:Show() end) end)' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 

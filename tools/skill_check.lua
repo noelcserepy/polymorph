@@ -191,7 +191,8 @@ local function transition(f, action, seconds, fields)
   local samples = {}
   -- Only what the player can see counts: shown, and not fully transparent.
   -- The first sample is right after the call, before the driver runs.
-  -- hidden: frames the player could not see after the first one they could.
+  -- hidden: frames the player could not see, once the frame had been seen
+  -- (before the call, or since).
   -- back: whether it came back into view after such a frame.
   local hidden, back = 0, false
   local function sample()
@@ -199,7 +200,7 @@ local function transition(f, action, seconds, fields)
     if l[1] > 0.01 then
       if hidden > 0 then back = true end
       samples[#samples + 1] = l
-    elseif samples[1] then
+    elseif samples[1] or before[1] > 0.01 then
       hidden = hidden + 1
     end
   end
