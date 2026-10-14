@@ -84,6 +84,24 @@ function CreateFrame(kind, name, parent, template)
   return f
 end
 UIParent = CreateFrame("Frame")
+UIParent.w, UIParent.h = 1000, 800
+
+-- Where frames draw, in screen units: the anchor chain, sizes and scales.
+local function pointIn(left, bottom, w, h, point)
+  local x = point:find("LEFT") and left or point:find("RIGHT") and left + w or left + w / 2
+  local y = point:find("TOP") and bottom + h or point:find("BOTTOM") and bottom or bottom + h / 2
+  return x, y
+end
+function Region:EffectiveScale() return self.s * (self.parent and self.parent:EffectiveScale() or 1) end
+function Region:Rect()
+  if self == UIParent then return 0, 0, self.w, self.h end
+  local e, p = self:EffectiveScale(), assert(self.point, "frame has no anchor")
+  local w, h = self.w * e, self.h * e
+  local rl, rb, rw, rh = (p[2] or UIParent):Rect()
+  local ax, ay = pointIn(rl, rb, rw, rh, p[3])
+  local ox, oy = pointIn(0, 0, w, h, p[1])
+  return ax + p[4] * e - ox, ay + p[5] * e - oy, w, h
+end
 function InCombatLockdown() return combat end
 function debugprofilestop() return os.clock() * 1000 end
 function GetTime() return now end
@@ -99,8 +117,8 @@ assert(loadfile(libPath))("Polymorph", {})
 
 local M = assert(loadfile(answerPath))()
 
-local function run(seconds)
-  local dt = 1 / 60
+local function run(seconds, fps)
+  local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
     now = now + dt
     for i = #timers, 1, -1 do
@@ -133,68 +151,86 @@ local function newFrame(template)
 end
 local function atRest(f) return near(f.alpha, 1) and near(f.s, 1) end
 
-check("1 toggle opens, closes, and survives fast clicks", function()
+local function between(v, a, b) return v > math.min(a, b) + 0.01 and v < math.max(a, b) - 0.01 end
+-- True while a show or hide is visibly under way: alpha or scale off rest.
+local function animating(f) return between(f.alpha, 0, 1) or between(f.s, 0.5, 1) or between(f.s, 1, 1.5) end
+
+check("1 toggle animates open and closed, and survives fast clicks", function()
   local panel, button = newFrame(), newFrame()
   panel:Hide()
   M.setupToggle(panel, button)
   local click = function() button.scripts.OnClick(button, "LeftButton") end
-  click(); run(1.5)
+  click(); run(0.05)
+  assert(panel.shown and animating(panel), "did not animate open")
+  run(1.5)
   assert(panel.shown and atRest(panel), "not open at rest after one click")
-  click(); run(1.5)
+  click(); run(0.05)
+  assert(panel.shown and animating(panel), "did not animate closed")
+  run(1.5)
   assert(not panel.shown, "still shown after the second click")
   click(); run(0.05); click(); run(0.05); click(); run(1.5)
   assert(panel.shown and atRest(panel), "three fast clicks did not end open at rest")
 end)
 
-check("2 toast slides in from above and leaves after 3 s", function()
+check("2 toast slides in from above and leaves upward after 3 s", function()
   local toast = newFrame()
   toast:SetPoint("TOP", UIParent, "TOP", 0, -120)
   M.notify(toast)
   run(0.05)
   local _, _, _, _, y = toast:GetPoint()
-  assert(toast.shown and y > -120, "did not start above its anchor: y " .. tostring(y))
+  assert(toast.shown and y > -120 and toast.alpha < 1, "did not come in from above: y " .. tostring(y))
   run(1)
   _, _, _, _, y = toast:GetPoint()
   assert(toast.shown and near(toast.alpha, 1) and near(y, -120), "not in place after 1 s")
-  run(3)
-  assert(not toast.shown, "still shown after 4 s")
+  run(1.8)
+  local leftUp, wentDown = false, false
+  for _ = 1, 120 do
+    run(1 / 60)
+    _, _, _, _, y = toast:GetPoint()
+    if toast.shown and y > -119.5 and toast.alpha < 1 then leftUp = true end
+    if toast.shown and y < -120.5 then wentDown = true end
+  end
+  assert(leftUp and not wentDown, "did not leave upward")
+  assert(not toast.shown, "still shown after 5 s")
 end)
 
 check("3 bar follows events smoothly", function()
   local bar = newFrame()
   bar:SetWidth(200)
-  M.updateBar(bar, 0.5); run(0.1)
+  M.updateBar(bar, 0.5); run(0.05)
+  assert(between(bar.w, 200, 100), "did not animate: width " .. bar.w)
   local before = bar.w
   M.updateBar(bar, 0.8)
   assert(bar.w == before, "jumped on a new event")
+  run(0.05)
+  assert(between(bar.w, before, 160) or between(bar.w, 160, 200), "did not move toward 160: " .. bar.w)
   run(2)
   assert(near(bar.w, 160, 0.1), "width " .. bar.w .. ", want 160")
 end)
 
-check("4 hover button grows around its center", function()
+check("4 hover button sits at TOPLEFT (10, -10) and grows around its center", function()
   local parent = newFrame()
   local b = M.makeHoverButton(parent)
-  local point, _, _, x, y = b:GetPoint()
-  local onTopLeft = point == "TOPLEFT" and near(x, 10) and near(y, -10)
-  local centered = point == "CENTER" and near(x, 0) and near(y, 0)
-  if centered then
-    local holder = b.point[2]
-    local hp, hrel, hrp, hx, hy = holder:GetPoint()
-    assert(hrel == parent and hp == "TOPLEFT" and hrp == "TOPLEFT" and near(hx, 10) and near(hy, -10), "holder not at the parent's TOPLEFT (10, -10)")
-  else
-    assert(not onTopLeft, "anchored by TOPLEFT, so scale grows toward the bottom right")
-    error("button anchored at " .. tostring(point) .. " " .. tostring(x) .. "," .. tostring(y))
-  end
+  local pl, pb, _, ph = parent:Rect()
+  local l, bottom, w, h = b:Rect()
+  assert(near(w, 40) and near(h, 40), "size " .. w .. "x" .. h)
+  assert(near(l, pl + 10) and near(bottom + h, pb + ph - 10), "not at the parent's TOPLEFT (10, -10)")
+  local cx, cy = l + w / 2, bottom + h / 2
   b.scripts.OnEnter(b); run(1)
-  assert(near(b.s, 1.15), "scale " .. b.s .. " on hover")
+  l, bottom, w, h = b:Rect()
+  assert(near(w, 46) and near(h, 46), "drawn " .. w .. " wide on hover, want 46")
+  assert(near(l + w / 2, cx) and near(bottom + h / 2, cy), "center moved while growing")
   b.scripts.OnLeave(b); run(1)
-  assert(near(b.s, 1), "scale " .. b.s .. " after leave")
+  l, bottom, w = b:Rect()
+  assert(near(w, 40) and near(l + w / 2, cx), "did not shrink back")
 end)
 
-check("5 secure panel closes in combat without blocked calls", function()
+check("5 secure panel animates out and hides, in and out of combat, with no blocked calls", function()
   local panel = newFrame("SecureHandlerStateTemplate")
   combat = true
   M.closeSecurePanel(panel)
+  run(0.05)
+  assert(between(panel.alpha, 0, 1), "did not animate in combat: alpha " .. panel.alpha)
   run(1)
   assert(near(panel.alpha, 0), "not faded in combat: alpha " .. panel.alpha)
   combat = false
@@ -203,6 +239,8 @@ check("5 secure panel closes in combat without blocked calls", function()
   assert(not panel.shown, "not hidden after combat")
   local other = newFrame("SecureHandlerStateTemplate")
   M.closeSecurePanel(other)
+  run(0.05)
+  assert(other.shown and animating(other), "did not animate out of combat")
   run(1)
   assert(not other.shown, "not hidden out of combat")
 end)
@@ -211,11 +249,17 @@ check("6 list fades in one after another", function()
   local rows = {}
   for i = 1, 5 do rows[i] = newFrame() end
   M.fadeListIn(rows)
-  run(1 / 60)
-  assert(rows[1].alpha < 0.5 and rows[5].alpha < 0.5, "rows did not start invisible")
-  run(0.1)
-  assert(rows[1].alpha > rows[5].alpha, "not staggered: " .. rows[1].alpha .. " vs " .. rows[5].alpha)
-  run(2)
+  local started = {}
+  for step = 1, 240 * 2 do
+    run(1 / 240, 240)
+    for i, r in ipairs(rows) do
+      if not started[i] and r.alpha > 0.02 then started[i] = step end
+    end
+  end
+  for i = 1, 5 do assert(started[i], "row " .. i .. " never faded in") end
+  for i = 2, 5 do
+    assert(started[i] > started[i - 1], ("row %d started with or before row %d"):format(i, i - 1))
+  end
   for i, r in ipairs(rows) do assert(near(r.alpha, 1), "row " .. i .. " alpha " .. r.alpha) end
 end)
 
