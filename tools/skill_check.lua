@@ -157,10 +157,11 @@ local function between(v, a, b) return v > math.min(a, b) + 0.01 and v < math.ma
 -- rectangle on screen.
 local function look(f)
   local l, b, w, h = f:Rect()
-  return { f:IsVisible() and f:EffectiveAlpha() or 0, l, b, w, h }
+  return { f:IsVisible() and f:EffectiveAlpha() or 0, l, b, w, h, b + h }
 end
--- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height.
-local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 3 }
+-- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height, 6 top.
+-- The toast is anchored by its top, so its vertical position is the top edge.
+local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 6 }
 local function same(a, b, fields)
   for _, i in ipairs(fields or ALL) do if math.abs(a[i] - b[i]) > 0.01 then return false end end
   return true
