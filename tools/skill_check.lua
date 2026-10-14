@@ -283,10 +283,14 @@ check("6 list fades in one after another", function()
     run(1 / 240, 240)
     for i, r in ipairs(rows) do
       if not started[i] and r.alpha > 0.02 then started[i] = step end
-      if r.alpha > 0.05 and r.alpha < 0.95 then faded[i] = (faded[i] or 0) + 1 end
+      if r.alpha > 0.05 and r.alpha < 0.95 then
+        faded[i] = faded[i] or {}
+        faded[i][("%.2f"):format(r.alpha)] = true
+      end
     end
   end
-  for i = 1, 5 do assert(started[i] and (faded[i] or 0) >= ANIMATED, "row " .. i .. " did not fade in") end
+  local function distinct(set) local n = 0; for _ in pairs(set or {}) do n = n + 1 end; return n end
+  for i = 1, 5 do assert(started[i] and distinct(faded[i]) >= ANIMATED, "row " .. i .. " did not fade in") end
   for i = 2, 5 do
     assert(started[i] > started[i - 1], ("row %d started with or before row %d"):format(i, i - 1))
   end
