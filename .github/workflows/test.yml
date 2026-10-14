@@ -1,0 +1,25 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lua:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 5.1 is what WoW runs. 5.4 catches accidental reliance on 5.1-only behavior.
+        lua: ["5.1.5", "5.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leafo/gh-actions-lua@v10
+        with:
+          luaVersion: ${{ matrix.lua }}
+      - name: Syntax check
+        run: luac -p Polymorph.lua tests/core_test.lua
+      - name: Tests
+        run: lua tests/core_test.lua Polymorph.lua
