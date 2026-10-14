@@ -162,21 +162,35 @@ local function same(a, b)
   return true
 end
 
+-- Runs `action`, then samples what the frame draws at 240 fps for `seconds`.
+-- Returns how many shown samples match neither the look before the action nor
+-- the look at the end: in-between frames, the evidence of an animation. Also
+-- returns the samples, for direction checks.
+local function transition(f, action, seconds)
+  local before = look(f)
+  action()
+  local samples = {}
+  for _ = 1, math.floor(seconds * 240) do
+    run(1 / 240, 240)
+    if f.shown then samples[#samples + 1] = look(f) end
+  end
+  local after = look(f)
+  local between = 0
+  for _, l in ipairs(samples) do
+    if not same(l, before) and not same(l, after) then between = between + 1 end
+  end
+  return between, samples
+end
+local ANIMATED = 3 -- in-between samples, at least 12 ms of motion at 240 fps
+
 check("1 toggle animates open and closed, and survives fast clicks", function()
   local panel, button = newFrame(), newFrame()
   panel:Hide()
   M.setupToggle(panel, button)
   local click = function() button.scripts.OnClick(button, "LeftButton") end
-  click(); run(0.05)
-  local opening = look(panel)
-  assert(panel.shown, "not shown after a click")
-  run(1.5)
-  local open = look(panel)
+  assert(transition(panel, click, 1.5) >= ANIMATED, "did not animate open")
   assert(panel.shown and atRest(panel), "not open at rest after one click")
-  assert(not same(opening, open), "did not animate open")
-  click(); run(0.05)
-  assert(panel.shown and not same(look(panel), open), "did not animate closed")
-  run(1.5)
+  assert(transition(panel, click, 1.5) >= ANIMATED, "did not animate closed")
   assert(not panel.shown, "still shown after the second click")
   click(); run(0.05); click(); run(0.05); click(); run(1.5)
   assert(panel.shown and atRest(panel), "three fast clicks did not end open at rest")
@@ -185,36 +199,29 @@ end)
 check("2 toast slides in from above and leaves upward after 3 s", function()
   local toast = newFrame()
   toast:SetPoint("TOP", UIParent, "TOP", 0, -120)
-  M.notify(toast)
-  run(0.05)
-  local _, _, _, _, y = toast:GetPoint()
-  assert(toast.shown and y > -120 and toast.alpha < 1, "did not come in from above: y " .. tostring(y))
-  run(1)
-  _, _, _, _, y = toast:GetPoint()
-  assert(toast.shown and near(toast.alpha, 1) and near(y, -120), "not in place after 1 s")
-  run(1.8)
-  local leftUp, wentDown = false, false
-  for _ = 1, 120 do
-    run(1 / 60)
-    _, _, _, _, y = toast:GetPoint()
-    if toast.shown and y > -119.5 and toast.alpha < 1 then leftUp = true end
-    if toast.shown and y < -120.5 then wentDown = true end
-  end
-  assert(leftUp and not wentDown, "did not leave upward")
-  assert(not toast.shown, "still shown after 5 s")
+  local _, b0, _, h0 = toast:Rect()
+  local top = b0 + h0
+  -- Direction is where the motion starts (coming in) or ends (leaving). A
+  -- spring may overshoot past the anchor on the way.
+  local function above(l) return l[3] + l[5] > top + 0.5 end
+  local n, samples = transition(toast, function() M.notify(toast) end, 1)
+  assert(n >= ANIMATED and above(samples[1]), "did not slide in from above")
+  local _, b, _, h = toast:Rect()
+  assert(toast.shown and near(b + h, top), "not in place after 1 s")
+  run(1.9)
+  n, samples = transition(toast, function() end, 1.5)
+  assert(n >= ANIMATED and above(samples[#samples]), "did not slide out upward")
+  assert(not toast.shown, "still shown after 4.5 s")
 end)
 
 check("3 bar follows events smoothly", function()
   local bar = newFrame()
   bar:SetWidth(200)
-  M.updateBar(bar, 0.5); run(0.05)
-  assert(between(bar.w, 200, 100), "did not animate: width " .. bar.w)
+  assert(transition(bar, function() M.updateBar(bar, 0.5) end, 0.05) >= ANIMATED, "did not animate to 100")
   local before = bar.w
   M.updateBar(bar, 0.8)
   assert(bar.w == before, "jumped on a new event")
-  run(0.05)
-  assert(between(bar.w, before, 160) or between(bar.w, 160, 200), "did not move toward 160: " .. bar.w)
-  run(2)
+  assert(transition(bar, function() end, 2) >= ANIMATED, "did not animate to 160")
   assert(near(bar.w, 160, 0.1), "width " .. bar.w .. ", want 160")
 end)
 
@@ -227,33 +234,25 @@ check("4 hover button sits at TOPLEFT (10, -10) and grows around its center", fu
   assert(near(l, pl + 10) and near(bottom + h, pb + ph - 10), "not at the parent's TOPLEFT (10, -10)")
   local cx, cy = l + w / 2, bottom + h / 2
   local before = look(b)
-  b.scripts.OnEnter(b); run(1)
+  assert(transition(b, function() b.scripts.OnEnter(b) end, 1) >= ANIMATED, "did not animate growing")
   l, bottom, w, h = b:Rect()
   assert(near(w, 46) and near(h, 46), "drawn " .. w .. " wide on hover, want 46")
   assert(near(l + w / 2, cx) and near(bottom + h / 2, cy), "center moved while growing")
-  b.scripts.OnLeave(b); run(1)
+  assert(transition(b, function() b.scripts.OnLeave(b) end, 1) >= ANIMATED, "did not animate shrinking")
   assert(same(look(b), before), "not back to its first size and place after leave")
 end)
 
 check("5 secure panel animates out and hides, in and out of combat, with no blocked calls", function()
   local panel = newFrame("SecureHandlerStateTemplate")
-  local before = look(panel)
   combat = true
-  M.closeSecurePanel(panel)
-  run(0.05)
-  assert(not same(look(panel), before), "did not animate in combat")
-  run(1)
+  assert(transition(panel, function() M.closeSecurePanel(panel) end, 1) >= ANIMATED, "did not animate in combat")
   assert(near(panel.alpha, 0), "not faded in combat: alpha " .. panel.alpha)
   combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(0.1)
   assert(not panel.shown, "not hidden after combat")
   local other = newFrame("SecureHandlerStateTemplate")
-  before = look(other)
-  M.closeSecurePanel(other)
-  run(0.05)
-  assert(other.shown and not same(look(other), before), "did not animate out of combat")
-  run(1)
+  assert(transition(other, function() M.closeSecurePanel(other) end, 1) >= ANIMATED, "did not animate out of combat")
   assert(not other.shown, "not hidden out of combat")
 end)
 
@@ -266,10 +265,10 @@ check("6 list fades in one after another", function()
     run(1 / 240, 240)
     for i, r in ipairs(rows) do
       if not started[i] and r.alpha > 0.02 then started[i] = step end
-      if between(r.alpha, 0.05, 0.95) then faded[i] = true end
+      if r.alpha > 0.05 and r.alpha < 0.95 then faded[i] = (faded[i] or 0) + 1 end
     end
   end
-  for i = 1, 5 do assert(started[i] and faded[i], "row " .. i .. " did not fade in") end
+  for i = 1, 5 do assert(started[i] and (faded[i] or 0) >= ANIMATED, "row " .. i .. " did not fade in") end
   for i = 2, 5 do
     assert(started[i] > started[i - 1], ("row %d started with or before row %d"):format(i, i - 1))
   end
