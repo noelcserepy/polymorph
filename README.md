@@ -45,7 +45,7 @@ To copy it in by hand, `Polymorph.lua` and `lib.xml` are all you need, plus LibS
 | --- | --- | --- |
 | `alpha` | `SetAlpha` | Clamped to 0..1. |
 | `x`, `y` | `SetPoint` offsets | Offsets from the frame's first anchor, as it was when Polymorph first touched the frame. |
-| `width`, `height` | `SetWidth`, `SetHeight` | |
+| `width`, `height` | `SetWidth`, `SetHeight` | One `SetSize` when both move. |
 | `scale` | `SetScale` | Scale also scales anchor offsets. To grow around the center, anchor the frame at offset 0 inside a holder. |
 
 Animate several properties in one call. Each one moves on its own track.

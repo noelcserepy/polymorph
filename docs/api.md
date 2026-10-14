@@ -17,7 +17,7 @@ Poly(f):set({ alpha = 0 }):to({ alpha = 1 })
 | --- | --- | --- | --- |
 | `alpha` | `GetAlpha` | `SetAlpha`, clamped to 0..1 | 0.001 |
 | `x`, `y` | Polymorph's own offset | `SetPoint` on the frame's first anchor | 0.05 |
-| `width`, `height` | `GetWidth`, `GetHeight` | `SetWidth`, `SetHeight` | 0.05 |
+| `width`, `height` | `GetWidth`, `GetHeight` | `SetWidth`, `SetHeight`, or one `SetSize` when both move | 0.05 |
 | `scale` | `GetScale` | `SetScale` | 0.0005 |
 
 `x` and `y` are offsets from the frame's first anchor, as it was when Polymorph first touched the frame. Polymorph only rewrites that one anchor point. Set your anchors before the first `Poly(frame)` call.
@@ -151,6 +151,7 @@ The `alpha`, `x`, `y` and `hide()` rows were tested on `SecureActionButtonTempla
 ## Performance and limits
 
 - **One driver.** A single shared `OnUpdate` frame steps every animation. It turns itself off when nothing moves.
+- **Few game calls.** Stepping the animations makes one `InCombatLockdown()` call per update. Each frame then gets at most one `SetPoint` for `x` and `y` together, and one `SetSize` for `width` and `height` together, or `SetWidth` or `SetHeight` when only one moves. Finishing work, such as a `hide()` resetting the frame, makes its own calls.
 - **No timers.** Polymorph makes no per-animation timers or animation groups. The game caps each addon at 500 timers and 2000 animation groups. A frame animated in combat gets one animation group, created once.
 - **Allocation.** While animations only run, the driver allocates nothing per frame. Allocation happens when work starts or ends:
   - Each `to()` call allocates one small closure, plus a track table for each property that wasn't already moving. `show()` and `hide()` also build small tables of targets.

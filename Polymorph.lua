@@ -69,9 +69,17 @@ Poly.easings = {
   linear = function(p) return p end,
   inQuad = function(p) return p * p end,
   outQuad = function(p) return 1 - (1 - p) * (1 - p) end,
-  inOutQuad = function(p) return p < 0.5 and 2 * p * p or 1 - (-2 * p + 2) ^ 2 / 2 end,
-  outCubic = function(p) return 1 - (1 - p) ^ 3 end,
-  inOutCubic = function(p) return p < 0.5 and 4 * p * p * p or 1 - (-2 * p + 2) ^ 3 / 2 end,
+  inOutQuad = function(p)
+    if p < 0.5 then return 2 * p * p end
+    local q = 2 - 2 * p
+    return 1 - q * q / 2
+  end,
+  outCubic = function(p) local q = 1 - p; return 1 - q * q * q end,
+  inOutCubic = function(p)
+    if p < 0.5 then return 4 * p * p * p end
+    local q = 2 - 2 * p
+    return 1 - q * q * q / 2
+  end,
   ease = bezier(0.25, 0.1, 0.25, 1),
   easeOut = bezier(0, 0, 0.58, 1),
   easeInOut = bezier(0.42, 0, 0.58, 1),
@@ -174,6 +182,21 @@ local function writeLayout(m)
   if m.isLocked then puppetMove(m) else commit(m) end
 end
 
+-- The one writer of width and height: it clamps them and picks the game call.
+-- The driver stages both, then writes them in one call per frame. set() stages
+-- one and writes at once. x and y stage straight into offsetX and offsetY.
+local function writeSize(m)
+  local w, h = m.stagedWidth, m.stagedHeight
+  m.stagedWidth, m.stagedHeight = nil, nil
+  if w and h then
+    m.frame:SetSize(max(0, w), max(0, h))
+  elseif w then
+    m.frame:SetWidth(max(0, w))
+  else
+    m.frame:SetHeight(max(0, h))
+  end
+end
+
 local PROPS = {
   alpha = {
     precision = 0.001,
@@ -196,22 +219,26 @@ local PROPS = {
   width = {
     restricted = true, precision = 0.05,
     read = function(m) return m.frame:GetWidth() end,
-    write = function(m, v) m.frame:SetWidth(max(0, v)) end,
+    write = function(m, v) m.stagedWidth = v; writeSize(m) end,
+    staged = "stagedWidth", flush = writeSize,
   },
   height = {
     restricted = true, precision = 0.05,
     read = function(m) return m.frame:GetHeight() end,
-    write = function(m, v) m.frame:SetHeight(max(0, v)) end,
+    write = function(m, v) m.stagedHeight = v; writeSize(m) end,
+    staged = "stagedHeight", flush = writeSize,
   },
   x = {
     restricted = true, native = true, precision = 0.05,
     read = function(m) return m.offsetX end,
     write = function(m, v) m.offsetX = v; writeLayout(m) end,
+    staged = "offsetX", flush = writeLayout,
   },
   y = {
     restricted = true, native = true, precision = 0.05,
     read = function(m) return m.offsetY end,
     write = function(m, v) m.offsetY = v; writeLayout(m) end,
+    staged = "offsetY", flush = writeLayout,
   },
 }
 Poly.properties = PROPS
@@ -240,25 +267,31 @@ local function locked(m)
   return InCombatLockdown() and m.frame:IsProtected()
 end
 
+-- Semi-implicit Euler in steps of at most STEP. t.k and t.c are stiffness and
+-- damping per unit of mass.
 local function stepSpring(t, dt)
-  local s = t.spring
-  local mass = s.mass or 1
-  while dt > 0 do
-    local h = min(dt, STEP)
-    local accel = (-s.stiffness * (t.value - t.target) - s.damping * t.velocity) / mass
-    t.velocity = t.velocity + accel * h
-    t.value = t.value + t.velocity * h
-    dt = dt - h
+  local k, c, target = t.k, t.c, t.target
+  local value, velocity = t.value, t.velocity
+  while dt > STEP do
+    velocity = velocity + (k * (target - value) - c * velocity) * STEP
+    value = value + velocity * STEP
+    dt = dt - STEP
   end
-  return abs(t.velocity) < t.precision * 10 and abs(t.value - t.target) < t.precision
+  velocity = velocity + (k * (target - value) - c * velocity) * dt
+  value = value + velocity * dt
+  t.value, t.velocity = value, velocity
+  local restV, d, precision = t.precision * 10, value - target, t.precision
+  return velocity < restV and velocity > -restV and d < precision and d > -precision
 end
 
 local function stepTween(t, dt)
-  t.elapsed = t.elapsed + dt
-  local p = t.duration > 0 and min(1, t.elapsed / t.duration) or 1
-  local last = t.value
-  t.value = t.from + (t.target - t.from) * t.ease(p)
-  t.velocity = dt > 0 and (t.value - last) / dt or 0
+  local elapsed, duration = t.elapsed + dt, t.duration
+  t.elapsed = elapsed
+  local p = elapsed < duration and elapsed / duration or 1
+  local last, from = t.value, t.from
+  local value = from + (t.target - from) * t.ease(p)
+  t.value = value
+  t.velocity = dt > 0 and (value - last) / dt or 0
   return p >= 1
 end
 
@@ -277,10 +310,14 @@ local function update(_, elapsed)
   local started = profile()
   local dt = min(elapsed, 0.1)
   local tracks = 0
+  local inCombat = InCombatLockdown()
   for m in pairs(active) do
     -- Checked every frame: combat can start in the middle of an animation.
-    local isLocked = locked(m)
+    local isLocked = inCombat and m.frame:IsProtected() or false
     m.isLocked = isLocked
+    -- Properties that share a game call (x and y, width and height) stage
+    -- their values, and each call runs once after the loop.
+    local flush1, flush2
     for name, t in pairs(m.tracks) do
       tracks = tracks + 1
       local prop = PROPS[name]
@@ -290,7 +327,14 @@ local function update(_, elapsed)
         local rest
         if t.spring then rest = stepSpring(t, dt) else rest = stepTween(t, dt) end
         if rest then t.value = t.target end
-        prop.write(m, t.value)
+        local staged = prop.staged
+        if staged then
+          m[staged] = t.value
+          local flush = prop.flush
+          if not flush1 or flush1 == flush then flush1 = flush else flush2 = flush end
+        else
+          prop.write(m, t.value)
+        end
         if rest then
           m.tracks[name] = nil
           if m.awayKeys and m.awayKeys[name] and t.target == m.rest[name] then m.awayKeys[name] = nil end
@@ -298,6 +342,8 @@ local function update(_, elapsed)
         end
       end
     end
+    if flush1 then flush1(m) end
+    if flush2 then flush2(m) end
     if next(m.tracks) == nil then
       active[m] = nil
     end
@@ -395,6 +441,10 @@ local function animate(m, targets, opts, owner)
     t.precision = prop.precision
     t.delay = opts.delay or 0
     t.spring = spring
+    if spring then
+      local mass = spring.mass or 1
+      t.k, t.c = spring.stiffness / mass, spring.damping / mass
+    end
     if ease then
       t.ease, t.duration, t.elapsed, t.from = ease, opts.duration, 0, t.value
     end
