@@ -175,7 +175,7 @@ local function transition(f, action, seconds, fields)
   local samples = {}
   for _ = 1, math.floor(seconds * 240) do
     run(1 / 240, 240)
-    if f.shown then samples[#samples + 1] = look(f) end
+    if f:IsVisible() then samples[#samples + 1] = look(f) end
   end
   local after = look(f)
   -- Distinct in-between looks: a frame that holds still, then jumps, gives one.
@@ -234,7 +234,9 @@ check("3 bar follows events smoothly", function()
   bar:SetWidth(200)
   assert(transition(bar, function() M.updateBar(bar, 0.5) end, 2, WIDTH) >= ANIMATED, "did not animate to 100")
   assert(near(bar.w, 100, 0.1), "width " .. bar.w .. ", want 100")
-  M.updateBar(bar, 0.4); run(0.05)
+  -- Every event animates, including one that arrives mid-animation.
+  assert(transition(bar, function() M.updateBar(bar, 0.4) end, 0.05, WIDTH) >= ANIMATED and between(bar.w, 100, 80),
+    "did not animate toward 80: width " .. bar.w)
   local before = bar.w
   M.updateBar(bar, 0.8)
   assert(bar.w == before, "jumped on a new event")
@@ -292,8 +294,9 @@ check("6 list fades in one after another", function()
   for step = 1, 240 * 2 do
     run(1 / 240, 240)
     for i, r in ipairs(rows) do
-      if not started[i] and r.alpha > 0.02 then started[i] = step end
-      if r.alpha > 0.05 and r.alpha < 0.95 then
+      local seen = r:IsVisible()
+      if seen and not started[i] and r.alpha > 0.02 then started[i] = step end
+      if seen and r.alpha > 0.05 and r.alpha < 0.95 then
         faded[i] = faded[i] or {}
         faded[i][("%.2f"):format(r.alpha)] = true
       end
@@ -304,7 +307,7 @@ check("6 list fades in one after another", function()
   for i = 2, 5 do
     assert(started[i] > started[i - 1], ("row %d started with or before row %d"):format(i, i - 1))
   end
-  for i, r in ipairs(rows) do assert(near(r.alpha, 1), "row " .. i .. " alpha " .. r.alpha) end
+  for i, r in ipairs(rows) do assert(r:IsVisible() and near(r.alpha, 1), "row " .. i .. " not fully visible at the end") end
 end)
 
 local failed = 0
