@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: Lib: Polymorph
+## Notes: Target-state animation for frames: springs, tweens, retargeting, combat-aware.
+## Author: noelcserepy
+## X-Category: Library
+## X-License: MIT
+## Version: @project-version@
+
+LibStub\LibStub.lua
+
+lib.xml
