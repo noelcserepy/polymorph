@@ -192,7 +192,7 @@ end
 ---------------------------------------------------------------------------
 
 local motions = setmetatable({}, { __mode = "k" }) -- frame -> motion
-local active, activeCount = {}, 0                    -- motion -> true
+local active = {}                                    -- motion -> true while it moves
 local stats = { frames = 0, ms = 0, peakTracks = 0 }
 -- Frames survive a LibStub upgrade. A newer copy takes them over and replaces
 -- their scripts. Animations running in the older copy stop where they are.
@@ -265,7 +265,6 @@ local function update(_, elapsed)
     end
     if next(m.tracks) == nil then
       active[m] = nil
-      activeCount = activeCount - 1
     end
   end
   for i = 1, callbackCount do
@@ -275,7 +274,7 @@ local function update(_, elapsed)
     fn(frame, name)
   end
   callbackCount = 0
-  if activeCount == 0 then driver:SetScript("OnUpdate", nil) end
+  if next(active) == nil then driver:SetScript("OnUpdate", nil) end
   stats.frames = stats.frames + 1
   stats.ms = stats.ms + (profile() - started)
   if tracks > stats.peakTracks then stats.peakTracks = tracks end
@@ -283,9 +282,9 @@ end
 
 local function wake(m)
   if not active[m] then
+    local wasIdle = next(active) == nil
     active[m] = true
-    activeCount = activeCount + 1
-    if activeCount == 1 then driver:SetScript("OnUpdate", update) end
+    if wasIdle then driver:SetScript("OnUpdate", update) end
   end
 end
 
@@ -431,6 +430,22 @@ local function takeVisibility(m)
   return m.visibilityToken
 end
 
+-- awayKeys holds every property a hide() moved away from rest that no show()
+-- or finished hide has returned yet. hide() adds to it, so stacked hides keep
+-- all their properties. restingTargets() returns the set to rest and empties it.
+local function markAway(m, targets)
+  m.awayKeys = m.awayKeys or {}
+  for name in pairs(targets) do m.awayKeys[name] = true end
+end
+
+local function restingTargets(m, away)
+  local targets = {}
+  for name in pairs(away) do targets[name] = m.rest[name] end
+  for name in pairs(m.awayKeys or {}) do targets[name] = m.rest[name] end
+  m.awayKeys = nil
+  return targets
+end
+
 -- Shows the frame from `away` (preset name or values) and animates to rest.
 -- While a hide is running, show() cancels it and turns the frame around,
 -- returning every property that hide was moving.
@@ -446,11 +461,7 @@ function Motion:show(away, opts)
     self:set(away)
     frame:Show()
   end
-  local targets = {}
-  for name in pairs(away) do targets[name] = self.rest[name] end
-  for name in pairs(self.awayKeys or {}) do targets[name] = self.rest[name] end
-  self.awayKeys = nil
-  return self:to(targets, opts)
+  return self:to(restingTargets(self, away), opts)
 end
 
 -- Animates to `away`, then hides the frame and resets it to rest while hidden.
@@ -468,10 +479,7 @@ function Motion:hide(away, opts)
       return
     end
     self.frame:Hide()
-    local reset = {}
-    for name in pairs(away) do reset[name] = self.rest[name] end
-    self:set(reset)
-    self.awayKeys = nil
+    self:set(restingTargets(self, away))
     if userDone then userDone(self.frame) end
   end
   local copy = {}
@@ -487,15 +495,16 @@ function Motion:hide(away, opts)
     end
     if next(targets) == nil then finish() return self end
   end
-  self.awayKeys = {}
-  for name in pairs(targets) do self.awayKeys[name] = true end
+  markAway(self, targets)
   return self:to(targets, copy)
 end
 
 setmetatable(Poly, { __call = function(_, frame) return motionFor(frame) end })
 
 function Poly.stats()
-  return { frames = stats.frames, ms = stats.ms, peakTracks = stats.peakTracks, active = activeCount }
+  local moving = 0
+  for _ in pairs(active) do moving = moving + 1 end
+  return { frames = stats.frames, ms = stats.ms, peakTracks = stats.peakTracks, active = moving }
 end
 
 function Poly.resetStats()
