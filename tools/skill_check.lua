@@ -157,12 +157,13 @@ local function between(v, a, b) return v > math.min(a, b) + 0.01 and v < math.ma
 -- rectangle on screen.
 local function look(f)
   local l, b, w, h = f:Rect()
-  return { f:IsVisible() and f:EffectiveAlpha() or 0, l, b, w, h, b + h }
+  return { f:IsVisible() and f:EffectiveAlpha() or 0, l, b, w, h, b + h, b + h / 2 }
 end
--- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height, 6 top.
--- A slide moves the whole frame, so both its bottom and top edges must animate.
--- Resizing moves only one of them.
-local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 3, 6 }
+-- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height, 6 top,
+-- 7 vertical center. A slide moves the whole frame, so bottom, top and center
+-- must all animate. A resize keeps one of them still: the point it grows
+-- around, whether the frame is anchored by its top, bottom or center.
+local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 3, 6, 7 }
 local function same(a, b, fields)
   for _, i in ipairs(fields or ALL) do if math.abs(a[i] - b[i]) > 0.01 then return false end end
   return true
@@ -328,7 +329,7 @@ check("6 list fades in one after another", function()
   for step = 1, 240 * 2 do
     run(1 / 240, 240)
     for i, r in ipairs(rows) do
-      local alpha = r:IsVisible() and r:EffectiveAlpha() or 0
+      local alpha = look(r)[1]
       if not started[i] and alpha > 0.02 then started[i] = step end
       if alpha > 0.05 and alpha < 0.95 then
         faded[i] = faded[i] or {}
