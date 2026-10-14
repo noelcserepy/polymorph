@@ -48,7 +48,7 @@ m:to({ width = 300 }, { duration = 0.25, ease = "outCubic" })
 
 **Retargeting.** Calling `to()` for a property that is already moving changes its target. The value continues from where it is. A spring keeps its velocity. A tween starts a new tween from the current value, so its velocity resets.
 
-**Callbacks and takeovers.** If a later call takes over one of a call's properties, that earlier call's `onComplete` never runs. Callbacks run after the frame's update. A callback can safely start new animations.
+**Callbacks and takeovers.** If a later call takes over one of a call's properties, that earlier call's `onComplete` never runs. `hide()` is the exception, described below. Callbacks run after the frame's update. A callback can safely start new animations.
 
 ## `m:set(values)`
 
@@ -94,6 +94,8 @@ m:show({ alpha = 0, x = 120 }, { spring = "gentle" })
 **hide().** It animates to `away`. Then it calls `Hide()`, resets properties to rest while the frame is hidden, and calls `opts.onComplete`. The reset covers every property that `show()` or `hide()` still owns. Ownership works per property:
 - A property becomes theirs when `show()` or `hide()` animates it.
 - It stops being theirs when its animation arrives back at rest, or when you take it over with `to()`, `set()` or `stop()`.
+
+Taking over a property doesn't cancel the hide. The hide stops waiting for that property, and it finishes once the properties it still owns have arrived. Only a later `show()` or `hide()` cancels it.
 
 So a `hide()` that interrupts another hide, or a `show()` that is still restoring, still ends with the frame at rest. Properties you have taken over are left as they are.
 
