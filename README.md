@@ -97,7 +97,16 @@ One shared `OnUpdate` drives every animation, and it switches itself off when no
 
 ## Reference
 
-[`docs/api.md`](docs/api.md) has every function, option and preset. It's written so that coding agents use the API correctly too.
+[`docs/api.md`](docs/api.md) has every function, option and preset.
+
+## For coding agents
+
+[`skills/polymorph/SKILL.md`](skills/polymorph/SKILL.md) teaches an agent to use Polymorph: setup, the rules that prevent the common bugs, the API, and patterns to copy. Agents that support skills load it on their own when addon code animates frames. Copy the `skills/polymorph` folder into your project or user skills folder:
+
+- Claude Code: `.claude/skills/` in the addon's repository, or `~/.claude/skills/`.
+- Codex and other agents that read `.agents/skills/`: that folder in the repository, or `~/.agents/skills/`.
+
+For any other agent, paste the file into its instructions.
 
 ## License
 
