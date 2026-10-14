@@ -31,7 +31,7 @@ local function fakeFrame(protected)
   function f:GetHeight() return self.h end
   function f:SetHeight(v) self.h = v end
   function f:GetScale() return self.s end
-  function f:SetScale(v) self.s = v end
+  function f:SetScale(v) assert(not (combat and protected), "SetScale while locked"); self.s = v end
   function f:GetPoint() return unpack(self.point, 1, 5) end
   function f:SetPoint(a, b, c, x, y)
     assert(not (combat and protected), "SetPoint while locked")
@@ -39,26 +39,38 @@ local function fakeFrame(protected)
     self.pointCalls = self.pointCalls + 1
   end
   function f:IsProtected() return protected end
-  -- Native animation groups: a paused Translation adds its offset to where the
-  -- frame shows, like the real client (dev/jobs/core/native_puppet.lua).
-  f.nativeX, f.nativeY = 0, 0
+  -- Native animation groups, paused at full progress, as measured in the client:
+  -- a Translation offset is in the frame's scaled units, and a Scale grows the
+  -- frame around its origin, which Polymorph sets to the anchor point.
+  f.nativeX, f.nativeY, f.nativeScale = 0, 0, 1
   function f:CreateAnimationGroup()
-    local ag = { playing = false }
-    function ag:CreateAnimation()
-      local a = { ox = 0, oy = 0 }
+    local ag = { playing = false, anims = {} }
+    local function apply()
+      local tr, sc = ag.anims.Translation, ag.anims.Scale
+      f.nativeX, f.nativeY = ag.playing and tr and tr.ox or 0, ag.playing and tr and tr.oy or 0
+      f.nativeScale = ag.playing and sc and sc.k or 1
+    end
+    function ag:CreateAnimation(kind)
+      local a = { ox = 0, oy = 0, k = 1 }
       function a:SetDuration() end
       function a:SetSmoothing() end
       function a:SetSmoothProgress() end
-      function a:SetOffset(x, y) self.ox, self.oy = x, y; if ag.playing then f.nativeX, f.nativeY = x, y end end
-      ag.anim = a
+      function a:SetScaleFrom() end
+      function a:SetOrigin(point) assert(point == f.point[1], "scale origin is not the anchor point") end
+      function a:SetOffset(x, y) self.ox, self.oy = x, y; apply() end
+      function a:SetScaleTo(x, y) assert(x == y); self.k = x; apply() end
+      ag.anims[kind] = a
       return a
     end
-    function ag:Play() self.playing = true; f.nativeX, f.nativeY = self.anim.ox, self.anim.oy end
+    function ag:Play() self.playing = true; apply() end
     function ag:Pause() end
-    function ag:Stop() self.playing = false; f.nativeX, f.nativeY = 0, 0 end
+    function ag:Stop() self.playing = false; apply() end
     return ag
   end
-  function f:VisualX() return self.point[4] + self.nativeX end
+  -- Where the anchor point draws, in parent units, and the drawn scale.
+  function f:VisualX() return (self.point[4] + self.nativeX) * self.s end
+  function f:VisualY() return (self.point[5] + self.nativeY) * self.s end
+  function f:VisualScale() return self.s * self.nativeScale end
   f.shown = true
   f.hideCalls = 0
   function f:IsShown() return self.shown end
@@ -164,6 +176,25 @@ test("protected frame in combat: x moves through the puppet, width waits", funct
   assert(f.point[4] == 60 and f.nativeX == 0 and f:VisualX() == 60, "commit moved the frame")
   run(0.5)
   assert(f.w == 160, "width not applied after combat")
+end)
+
+test("protected frame in combat: scale draws through the puppet and hands over without a jump", function()
+  local f = fakeFrame(true)
+  local m = Poly(f)
+  combat = true
+  m:to({ scale = 2, x = 30 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  local s, x = m:get("scale"), m:get("x")
+  assert(f.s == 1 and f.pointCalls == 0, "layout written while locked")
+  assert(near(f:VisualScale(), s), "puppet scale " .. f:VisualScale() .. " vs " .. s)
+  -- Where SetScale(s) with the anchor at 10 + x would draw it.
+  assert(near(f:VisualX(), (10 + x) * s) and near(f:VisualY(), 20 * s), "anchor point " .. f:VisualX() .. "," .. f:VisualY())
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  assert(f.s == s and f.nativeScale == 1 and f.nativeX == 0, "not committed")
+  assert(near(f:VisualX(), (10 + x) * s) and near(f:VisualY(), 20 * s), "jump at handover")
+  run(1)
+  assert(f.s == 2 and f.point[4] == 40)
 end)
 
 test("combat ending mid-animation hands over without a jump", function()
@@ -434,7 +465,7 @@ test("random show/hide sequences end where the last calls say", function()
         lastVis, deferredShow = "hide", nil
         local animated = {}
         for name, v in pairs(Poly.presets[away]) do
-          if not (locked() and (name == "scale" or name == "width")) then animated[name] = v end
+          if not (locked() and name == "width") then animated[name] = v end
         end
         visTakes(animated)
         m:hide(away, opts())

@@ -9,5 +9,5 @@ First version.
 - `delay` and `onComplete` on every call.
 - `set`, `stop`, `get`, `isMoving`.
 - `show(away, opts)` and `hide(away, opts)` with the presets `fade`, `pop`, `below`, `above`, `left` and `right`. The most recent call wins, also across combat.
-- Combat lockdown: alpha animates, `x` and `y` draw through a native animation, and other blocked properties wait for combat to end. Polymorph never calls a blocked function.
+- Combat lockdown: alpha animates, `x`, `y` and `scale` draw through native animations, and `width` and `height` wait for combat to end. Polymorph never calls a blocked function.
 - One shared driver, with no per-animation timers.

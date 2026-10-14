@@ -138,12 +138,15 @@ During combat lockdown, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide`
 | --- | --- |
 | `alpha` | Animates normally. |
 | `x`, `y` | Animates through a paused native Translation animation. Polymorph moves it with `SetOffset`, which the game allows in combat. When combat ends, the frame is anchored where it shows, and the native animation stops. The handover lands on the same pixel. |
-| `width`, `height`, `scale` | Paused. The property animates once combat ends. |
-| `set()` | `alpha`, `x` and `y` apply now. `width`, `height` and `scale` apply when combat ends. |
-| `hide()` | Animates the properties it can (`alpha`, `x`, `y`). It calls `Hide()` when combat ends. The faded frame still receives clicks until then. |
+| `scale` | Animates through a paused native Scale animation in the same group, steered with `SetScaleTo`. It grows around the frame's anchor point, and the Translation adds the shift that `SetScale` would give the anchor offset. When combat ends, Polymorph calls `SetScale` and `SetPoint` with what the frame shows. |
+| `width`, `height` | Paused. The property animates once combat ends. The game has no native animation for size. |
+| `set()` | `alpha`, `x`, `y` and `scale` apply now. `width` and `height` apply when combat ends. |
+| `hide()` | Animates the properties it can (`alpha`, `x`, `y`, `scale`). It calls `Hide()` when combat ends. The faded frame still receives clicks until then. |
 | `show()` on a hidden frame | Waits for combat to end, then shows. |
 
-`GetPoint()` and `GetLeft()` don't include native animation offsets. While locked, read positions with `m:get("x")`.
+`GetPoint()`, `GetLeft()` and `GetScale()` don't include native animations. While locked, read with `m:get("x")` or `m:get("scale")`.
+
+The `alpha`, `x`, `y` and `hide()` rows were tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions. The `scale` row was measured out of combat only: how the native Scale and Translation combine, and that `SetScaleTo` changes a paused Scale live. Its test in real combat is still to come.
 
 ## Performance and limits
 
