@@ -17,7 +17,7 @@ Poly(f):set({ alpha = 0 }):to({ alpha = 1 })
 | --- | --- | --- | --- |
 | `alpha` | `GetAlpha` | `SetAlpha`, clamped to 0..1 | 0.001 |
 | `x`, `y` | Polymorph's own offset | `SetPoint` on the frame's first anchor | 0.05 |
-| `width`, `height` | `GetWidth`, `GetHeight` | `SetWidth`, `SetHeight` | 0.05 |
+| `width`, `height` | `GetWidth`, `GetHeight` | `SetWidth`, `SetHeight`, or one `SetSize` when both move | 0.05 |
 | `scale` | `GetScale` | `SetScale` | 0.0005 |
 
 `x` and `y` are offsets from the frame's first anchor, as it was when Polymorph first touched the frame. Polymorph only rewrites that one anchor point. Set your anchors before the first `Poly(frame)` call.
