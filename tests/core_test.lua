@@ -234,4 +234,30 @@ test("protected frame: show while hidden in combat waits for combat end", functi
   assert(f.shown and f.alpha == 1, "not shown after combat")
 end)
 
+test("show interrupting a hide returns every property the hide moved", function()
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:hide("pop", { duration = 0.4 })
+  run(0.2)
+  assert(f.s < 1, "hide did not start shrinking")
+  m:show("fade", { duration = 0.2 })
+  run(0.6)
+  assert(f.shown and f.alpha == 1, "not shown at rest alpha")
+  assert(f.s == 1 and not m:isMoving("scale"), "scale left away from rest: " .. f.s)
+end)
+
+test("protected frame: a hide after a deferred show wins", function()
+  local f = fakeFrame(true)
+  f.shown = false
+  combat = true
+  local m = Poly(f)
+  m:show("fade", { duration = 0.1 })
+  m:hide("fade", { duration = 1 })
+  run(0.2)
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  run(1.5)
+  assert(not f.shown, "deferred show ran after a later hide")
+end)
+
 print(("CORE OK: %d tests"):format(passed))

@@ -125,11 +125,10 @@ local function puppetMove(m)
     p = { ag = ag, tr = tr }
     m.puppet = p
   end
-  if not p.active then
+  if not puppeted[m] then
     p.ag:Play()
     p.ag:Pause()
     p.tr:SetSmoothProgress(1)
-    p.active = true
     puppeted[m] = true
   end
   p.tr:SetOffset(m.offsetX - m.layoutX, m.offsetY - m.layoutY)
@@ -139,10 +138,8 @@ local function commit(m)
   local b = m.base
   m.frame:SetPoint(b[1], b[2], b[3], b[4] + m.offsetX, b[5] + m.offsetY)
   m.layoutX, m.layoutY = m.offsetX, m.offsetY
-  local p = m.puppet
-  if p and p.active then
-    p.ag:Stop()
-    p.active = false
+  if puppeted[m] then
+    m.puppet.ag:Stop()
     puppeted[m] = nil
   end
 end
@@ -262,12 +259,11 @@ local function update(_, elapsed)
         prop.write(m, t.value)
         if rest then
           m.tracks[name] = nil
-          m.trackCount = m.trackCount - 1
           if t.onDone then queueCallback(t.onDone, m.frame, name) end
         end
       end
     end
-    if m.trackCount == 0 then
+    if next(m.tracks) == nil then
       active[m] = nil
       activeCount = activeCount - 1
     end
@@ -306,9 +302,9 @@ local function motionFor(frame)
   local point, rel, relPoint, x, y = frame:GetPoint(1)
   local alpha = frame:GetAlpha()
   m = setmetatable({
-    frame = frame, tracks = {}, trackCount = 0,
+    frame = frame, tracks = {},
     base = { point or "CENTER", rel, relPoint or point or "CENTER", x or 0, y or 0 },
-    offsetX = 0, offsetY = 0, layoutX = 0, layoutY = 0, hideToken = 0,
+    offsetX = 0, offsetY = 0, layoutX = 0, layoutY = 0, visibilityToken = 0,
     -- What show() returns to. A frame first touched at alpha 0 rests at 1.
     rest = { alpha = alpha > 0 and alpha or 1, scale = frame:GetScale(), width = frame:GetWidth(),
              height = frame:GetHeight(), x = 0, y = 0 },
@@ -336,7 +332,6 @@ function Motion:to(targets, opts)
     if not t then
       t = { value = prop.read(self), velocity = 0 }
       self.tracks[name] = t
-      self.trackCount = self.trackCount + 1
     end
     t.target = target
     t.precision = prop.precision
@@ -358,10 +353,7 @@ function Motion:set(values)
   for name, value in pairs(values) do
     local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 2)
     local t = self.tracks[name]
-    if t then
-      self.tracks[name] = nil
-      self.trackCount = self.trackCount - 1
-    end
+    self.tracks[name] = nil
     if self.isLocked and waitsWhileLocked(prop) then
       self:to({ [name] = value }, { duration = 0 }) -- applied when combat ends
     else
@@ -374,10 +366,7 @@ end
 -- Stops one property, or all of them, where they are.
 function Motion:stop(name)
   for n in pairs(self.tracks) do
-    if name == nil or n == name then
-      self.tracks[n] = nil
-      self.trackCount = self.trackCount - 1
-    end
+    if name == nil or n == name then self.tracks[n] = nil end
   end
   return self
 end
@@ -390,7 +379,7 @@ end
 
 function Motion:isMoving(name)
   if name then return self.tracks[name] ~= nil end
-  return self.trackCount > 0
+  return next(self.tracks) ~= nil
 end
 
 ---------------------------------------------------------------------------
@@ -434,12 +423,20 @@ function Motion:restAt(values)
   return self
 end
 
+-- Every show() and hide() replaces the previous one: it bumps the token, which
+-- cancels a running hide's Hide(), and it clears any action deferred to combat end.
+local function takeVisibility(m)
+  m.visibilityToken = m.visibilityToken + 1
+  afterCombat[m] = nil
+  return m.visibilityToken
+end
+
 -- Shows the frame from `away` (preset name or values) and animates to rest.
--- While a hide is running, show() cancels it and turns the frame around.
+-- While a hide is running, show() cancels it and turns the frame around,
+-- returning every property that hide was moving.
 function Motion:show(away, opts)
   away = resolveAway(away)
-  self.hideToken = self.hideToken + 1
-  afterCombat[self] = nil
+  takeVisibility(self)
   local frame = self.frame
   if not frame:IsShown() then
     if locked(self) then
@@ -451,6 +448,8 @@ function Motion:show(away, opts)
   end
   local targets = {}
   for name in pairs(away) do targets[name] = self.rest[name] end
+  for name in pairs(self.awayKeys or {}) do targets[name] = self.rest[name] end
+  self.awayKeys = nil
   return self:to(targets, opts)
 end
 
@@ -460,11 +459,10 @@ end
 function Motion:hide(away, opts)
   away = resolveAway(away)
   opts = opts or {}
-  self.hideToken = self.hideToken + 1
-  local token = self.hideToken
+  local token = takeVisibility(self)
   local userDone = opts.onComplete
   local function finish()
-    if self.hideToken ~= token then return end
+    if self.visibilityToken ~= token then return end
     if locked(self) then
       afterCombat[self] = finish
       return
@@ -473,6 +471,7 @@ function Motion:hide(away, opts)
     local reset = {}
     for name in pairs(away) do reset[name] = self.rest[name] end
     self:set(reset)
+    self.awayKeys = nil
     if userDone then userDone(self.frame) end
   end
   local copy = {}
@@ -488,6 +487,8 @@ function Motion:hide(away, opts)
     end
     if next(targets) == nil then finish() return self end
   end
+  self.awayKeys = {}
+  for name in pairs(targets) do self.awayKeys[name] = true end
   return self:to(targets, copy)
 end
 

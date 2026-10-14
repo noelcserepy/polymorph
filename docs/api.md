@@ -87,8 +87,9 @@ m:show({ alpha = 0, x = 120 }, { spring = "gentle" })
 
 **show().**
 - If the frame is hidden, `show()` sets the `away` values, calls `Show()`, and animates each of those properties to its rest value.
-- If the frame is already shown, it animates to rest from wherever the frame is.
-- It cancels a running `hide()`, so that `Hide()` is never called.
+- If the frame is already shown, it animates the `away` properties to rest from wherever they are.
+- It cancels a running `hide()`, so that `Hide()` is never called. It also returns every property that hide was moving, so `hide("pop")` interrupted by `show("fade")` brings back scale as well as alpha.
+- In combat, the most recent `show()` or `hide()` wins. A `hide()` cancels a `show()` that was waiting for combat to end, and the reverse.
 
 **hide().** It animates to `away`. Then it calls `Hide()`, resets the `away` properties to rest while the frame is hidden, and calls `opts.onComplete`.
 
@@ -142,7 +143,7 @@ During combat lockdown, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide`
 
 - **One driver.** A single shared `OnUpdate` frame steps every animation. It turns itself off when nothing moves.
 - **No timers.** Polymorph makes no per-animation timers or animation groups. The game caps each addon at 500 timers and 2000 animation groups. A frame animated in combat gets one animation group, created once.
-- **Allocation.** The driver allocates nothing per frame. Each `to()` call allocates one small closure, plus a track table for each property that wasn't already moving.
+- **Allocation.** Once warmed up, the driver allocates nothing per frame. Its list of pending `onComplete` callbacks grows to the most animations that finish in a single frame, then gets reused. A protected frame's first move during combat lockdown creates its native animation once. Each `to()` call allocates one small closure, plus a track table for each property that wasn't already moving.
 
 `Poly.stats()` returns:
 - `frames`: driver updates counted,

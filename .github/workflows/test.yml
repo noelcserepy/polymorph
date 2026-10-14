@@ -20,6 +20,7 @@ jobs:
         with:
           luaVersion: ${{ matrix.lua }}
       - name: Syntax check
-        run: luac -p Polymorph.lua tests/core_test.lua
+        # One file per call: Lua 5.4's luac crashes when -p gets several files.
+        run: for f in Polymorph.lua tests/core_test.lua; do luac -p "$f"; done
       - name: Tests
         run: lua tests/core_test.lua Polymorph.lua
