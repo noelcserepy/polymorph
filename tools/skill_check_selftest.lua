@@ -54,6 +54,7 @@ local cases = {
   { "toast dims at 3 s, slides at 3.5 s", "did not start leaving by 3.3 s", { 'C_Timer.After(3, function() Poly(toast):hide("above") end)', 'C_Timer.After(3, function() toast:SetAlpha(0.9) end) C_Timer.After(3.5, function() Poly(toast):hide("above", { duration = 0.2 }) end)' } },
   { "toast resizes and jumps in", "did not slide in from above", { 'Poly(toast):show("above", { spring = "stiff" })', 'Poly(toast):show("above", { spring = "stiff" }); Poly(toast):to({ y = 0 }, { duration = 0, delay = 0.1 }); Poly(toast):to({ height = 110 }, { duration = 0.2, onComplete = function() Poly(toast):to({ height = 100 }, { duration = 0.2 }) end })' } },
   { "toast shrinks and jumps out", "did not slide out upward", { 'C_Timer.After(3, function() Poly(toast):hide("above") end)', 'C_Timer.After(3, function() Poly(toast):hide("above"); Poly(toast):to({ y = 16 }, { duration = 0, delay = 0.1 }); Poly(toast):to({ height = 90 }, { duration = 0.2 }) end)' } },
+  { "translucent hover button", true, { '  b:SetSize(40, 40)\n', '  b:SetSize(40, 40)\n  b:SetAlpha(0.5)\n' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 
