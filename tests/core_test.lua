@@ -29,7 +29,13 @@ local function fakeFrame(protected)
   function f:GetWidth() return self.w end
   function f:SetWidth(v) assert(not (combat and protected), "SetWidth while locked"); self.w = v end
   function f:GetHeight() return self.h end
-  function f:SetHeight(v) self.h = v end
+  function f:SetHeight(v) assert(not (combat and protected), "SetHeight while locked"); self.h = v end
+  f.sizeCalls = 0
+  function f:SetSize(w, h)
+    assert(not (combat and protected), "SetSize while locked")
+    self.w, self.h = w, h
+    self.sizeCalls = self.sizeCalls + 1
+  end
   function f:GetScale() return self.s end
   function f:SetScale(v) assert(not (combat and protected), "SetScale while locked"); self.s = v end
   function f:GetPoint() return unpack(self.point, 1, 5) end
@@ -228,6 +234,15 @@ test("combat ending mid-animation hands over without a jump", function()
   assert(f.nativeX == 0 and math.abs(f:VisualX() - mid) < 2, "jump at handover")
   run(1)
   assert(f.point[4] == 110)
+end)
+
+test("x and y share one SetPoint per update, width and height one SetSize", function()
+  local f = fakeFrame()
+  Poly(f):to({ x = 50, y = 20, width = 200, height = 80 }, { duration = 0.5 })
+  run(0.1)
+  assert(f.pointCalls == 6 and f.sizeCalls == 6, f.pointCalls .. " SetPoint, " .. f.sizeCalls .. " SetSize in 6 updates")
+  run(0.5)
+  assert(f.point[4] == 60 and f.point[5] == 40 and f.w == 200 and f.h == 80)
 end)
 
 test("onComplete can start the next animation", function()

@@ -15,3 +15,5 @@ If `.dev/AGENTS.md` exists, read it before anything else. It holds local, untrac
 ## Checks
 
 Run `lua tests/core_test.lua Polymorph.lua` on Lua 5.1 and on 5.4. CI runs both. Every behavior change adds or updates a test.
+
+For a change to the driver's speed, compare `lua tools/bench.lua Polymorph.lua` against the base branch's copy on the same machine. It reports Lua time and game calls per track. Its game-time column is an estimate from per-call costs measured in the client, so docs quote only in-game measurements.
