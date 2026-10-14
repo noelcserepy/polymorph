@@ -51,6 +51,7 @@ local cases = {
   { "hover button vanishes after shrinking", "button not visible after shrinking", { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1 }, { spring = "stiff", onComplete = function(f) f:Hide() end })' } },
   { "toast leaves 0.5 s late", "did not start leaving by 3.3 s", { 'C_Timer.After(3,', 'C_Timer.After(3.5,' } },
   { "bar jumps on the interrupting event", "jumped", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.8 then bar:SetWidth(130) end Poly(bar):to({ width = 200 * fraction }) end' } },
+  { "toast dims at 3 s, slides at 3.5 s", "did not start leaving by 3.3 s", { 'C_Timer.After(3, function() Poly(toast):hide("above") end)', 'C_Timer.After(3, function() toast:SetAlpha(0.9) end) C_Timer.After(3.5, function() Poly(toast):hide("above", { duration = 0.2 }) end)' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 
