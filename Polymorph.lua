@@ -802,8 +802,11 @@ end
 setmetatable(Poly, { __call = function(_, frame) return motionFor(frame) end })
 
 function Poly.stats()
+  -- Frames the driver steps, and frames whose tweens only the game draws.
   local moving = 0
-  for _ in pairs(active) do moving = moving + 1 end
+  for _, m in pairs(motions) do
+    if next(m.tracks) then moving = moving + 1 end
+  end
   return { frames = stats.frames, ms = stats.ms, peakTracks = stats.peakTracks, active = moving }
 end
 

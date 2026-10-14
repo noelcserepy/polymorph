@@ -311,6 +311,7 @@ test("native tween: drawn by the game on the measured curve, no Lua per frame", 
   assert(f.alpha == 1 and f.point[4] == 110, "final values not written first")
   run(1 / 60)
   assert(driverScript == nil, "driver still running for native tweens")
+  assert(Poly.stats().active == 1, "stats() does not count a natively moving frame")
   run(0.5 - 1 / 60)
   local want = math.sin(math.pi / 4)
   assert(near(f:VisualAlpha(), want, 1e-3) and near(f:VisualX(), 10 + 100 * want, 0.1), f:VisualAlpha() .. " " .. f:VisualX())
