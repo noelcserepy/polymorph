@@ -150,13 +150,13 @@ local function newFrame(template)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
   return f
 end
-local function atRest(f) return near(f.alpha, 1) and near(f.s, 1) end
+local function atRest(f) return near(f:EffectiveAlpha(), 1) and near(f.s, 1) end
 
 local function between(v, a, b) return v > math.min(a, b) + 0.01 and v < math.max(a, b) - 0.01 end
 -- What a frame draws: alpha and its rectangle on screen.
 local function look(f)
   local l, b, w, h = f:Rect()
-  return { f.alpha, l, b, w, h }
+  return { f:EffectiveAlpha(), l, b, w, h }
 end
 -- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height.
 local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 3 }
@@ -304,16 +304,18 @@ check("6 list fades in one after another", function()
   local rows = {}
   for i = 1, 5 do rows[i] = newFrame() end
   M.fadeListIn(rows)
-  for i, r in ipairs(rows) do assert(r.alpha < 0.05, "row " .. i .. " did not start invisible: alpha " .. r.alpha) end
+  for i, r in ipairs(rows) do
+    assert(r:EffectiveAlpha() < 0.05, "row " .. i .. " did not start invisible: alpha " .. r:EffectiveAlpha())
+  end
   local started, faded = {}, {}
   for step = 1, 240 * 2 do
     run(1 / 240, 240)
     for i, r in ipairs(rows) do
-      local seen = r:IsVisible()
-      if seen and not started[i] and r.alpha > 0.02 then started[i] = step end
-      if seen and r.alpha > 0.05 and r.alpha < 0.95 then
+      local alpha = r:IsVisible() and r:EffectiveAlpha() or 0
+      if not started[i] and alpha > 0.02 then started[i] = step end
+      if alpha > 0.05 and alpha < 0.95 then
         faded[i] = faded[i] or {}
-        faded[i][("%.2f"):format(r.alpha)] = true
+        faded[i][("%.2f"):format(alpha)] = true
       end
     end
   end
@@ -322,7 +324,10 @@ check("6 list fades in one after another", function()
   for i = 2, 5 do
     assert(started[i] > started[i - 1], ("row %d started with or before row %d"):format(i, i - 1))
   end
-  for i, r in ipairs(rows) do assert(r:IsVisible() and near(r.alpha, 1), "row " .. i .. " not fully visible at the end") end
+  run(0.5)
+  for i, r in ipairs(rows) do
+    assert(r:IsVisible() and near(r:EffectiveAlpha(), 1), "row " .. i .. " not fully visible at the end")
+  end
 end)
 
 local failed = 0
