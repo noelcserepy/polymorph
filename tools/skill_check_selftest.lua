@@ -75,6 +75,7 @@ local cases = {
   { "rows dip while fading in", "row 1 dimmed while fading in", { 'duration = 0.3, delay', 'ease = function(p) if p > 0.4 and p < 0.5 then return 0.1 end return p end, duration = 0.3, delay' } },
   { "hover hides at the call, returns mid-growth", "disappeared while growing", { 'b:SetScript("OnEnter", function(self) Poly(self):to({ scale = 1.15 }, { spring = "stiff" }) end)', 'b:SetScript("OnEnter", function(self) self:Hide(); Poly(self):to({ scale = 1.15 }, { duration = 0.2 }); C_Timer.After(0.1, function() self:Show() end) end)' } },
   { "hover hides at the call, returns mid-shrink", "disappeared while shrinking", { 'b:SetScript("OnLeave", function(self) Poly(self):to({ scale = 1 }, { spring = "stiff" }) end)', 'b:SetScript("OnLeave", function(self) self:Hide(); Poly(self):to({ scale = 1 }, { duration = 0.2 }); C_Timer.After(0.1, function() self:Show() end) end)' } },
+  { "bar hides at each event, returns mid-resize", "disappeared to 100", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) bar:Hide(); Poly(bar):to({ width = 200 * fraction }); C_Timer.After(0.02, function() bar:Show() end) end' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 
