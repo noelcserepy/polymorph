@@ -70,10 +70,78 @@ function Region:CreateFontString() return setmetatable({ scripts = {} }, Region)
 function Region:GetParent() return self.parent end
 -- The combat puppet: Polymorph steers a paused Translation and Scale. Only
 -- their effect on where the frame draws matters here, so they are recorded.
+-- Native animation groups, as measured in the client. Progress runs over the
+-- duration, backwards when played in reverse, through the smoothing curve. A
+-- Translation offset is in the frame's scaled units, a Scale grows the frame
+-- around its origin, and an Alpha draws its own value in place of the frame's.
+local CURVES = {
+  NONE = function(p) return p end,
+  IN = function(p) return 1 - math.cos(p * math.pi / 2) end,
+  OUT = function(p) return math.sin(p * math.pi / 2) end,
+  IN_OUT = function(p) return (1 - math.cos(p * math.pi)) / 2 end,
+}
+local groups = {}
 function Region:CreateAnimationGroup()
-  local ag = setmetatable({ scripts = {} }, Region)
-  function ag:CreateAnimation() return setmetatable({ scripts = {} }, Region) end
+  local owner = self
+  local ag = setmetatable({ scripts = {}, anims = {}, elapsed = 0 }, Region)
+  owner.groups = owner.groups or {}
+  table.insert(owner.groups, ag)
+  table.insert(groups, ag)
+  function ag:CreateAnimation(kind)
+    local a = setmetatable({ kind = kind, duration = 1, smoothing = "NONE", ox = 0, oy = 0, k = 1,
+                             origin = { "CENTER", 0, 0 }, scripts = {} }, Region)
+    function a:SetDuration(d) self.duration = d end
+    function a:SetSmoothing(v) self.smoothing = v end
+    function a:SetSmoothProgress(v) self.forced = v end
+    function a:GetProgress()
+      local p = math.min(1, ag.elapsed / self.duration)
+      return ag.reverse and 1 - p or p
+    end
+    function a:GetSmoothProgress() return self.forced or CURVES[self.smoothing](self:GetProgress()) end
+    function a:SetOffset(x, y) self.ox, self.oy = x, y end
+    function a:SetScaleTo(x) self.k = x end
+    function a:SetOrigin(point, x, y) self.origin = { point, x or 0, y or 0 } end
+    function a:SetFromAlpha(v) self.from = v end
+    function a:SetToAlpha(v) self.to = v end
+    table.insert(ag.anims, a)
+    return a
+  end
+  function ag:Play(reverse)
+    self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
+    for _, a in ipairs(self.anims) do a.forced = nil end
+  end
+  function ag:Pause() self.paused = true end
+  function ag:Stop() self.playing = false end
+  function ag:IsPlaying() return self.playing end
   return ag
+end
+local function advanceAnimations(dt)
+  for _, ag in ipairs(groups) do
+    if ag.playing and not ag.paused then
+      ag.elapsed = ag.elapsed + dt
+      local longest = 0
+      for _, a in ipairs(ag.anims) do longest = math.max(longest, a.duration) end
+      if ag.elapsed >= longest then
+        ag.playing = false
+        if ag.scripts.OnFinished then ag.scripts.OnFinished(ag) end
+      end
+    end
+  end
+end
+-- What every playing group on the frame adds: translation, scale and its origin, alpha.
+function Region:Native()
+  local x, y, k, origin, alpha = 0, 0, 1, { "CENTER", 0, 0 }, nil
+  for _, ag in ipairs(self.groups or {}) do
+    if ag.playing then
+      for _, a in ipairs(ag.anims) do
+        local sp = a:GetSmoothProgress()
+        if a.kind == "Translation" then x, y = x + a.ox * sp, y + a.oy * sp
+        elseif a.kind == "Scale" then k, origin = k * (1 + (a.k - 1) * sp), a.origin
+        elseif a.kind == "Alpha" then alpha = a.from + (a.to - a.from) * sp end
+      end
+    end
+  end
+  return x, y, k, origin, alpha
 end
 
 local frames = {}
@@ -92,16 +160,26 @@ local function pointIn(left, bottom, w, h, point)
   local y = point:find("TOP") and bottom + h or point:find("BOTTOM") and bottom or bottom + h / 2
   return x, y
 end
-function Region:EffectiveAlpha() return self.alpha * (self.parent and self.parent:EffectiveAlpha() or 1) end
+function Region:EffectiveAlpha()
+  local own = select(5, self:Native()) or self.alpha
+  return own * (self.parent and self.parent:EffectiveAlpha() or 1)
+end
 function Region:EffectiveScale() return self.s * (self.parent and self.parent:EffectiveScale() or 1) end
 function Region:Rect()
   if self == UIParent then return 0, 0, self.w, self.h end
   local e, p = self:EffectiveScale(), assert(self.point, "frame has no anchor")
   local w, h = self.w * e, self.h * e
+  local nx, ny, k, origin = self:Native()
   local rl, rb, rw, rh = (p[2] or UIParent):Rect()
   local ax, ay = pointIn(rl, rb, rw, rh, p[3])
   local ox, oy = pointIn(0, 0, w, h, p[1])
-  return ax + p[4] * e - ox, ay + p[5] * e - oy, w, h
+  local l, b = ax + (p[4] + nx) * e - ox, ay + (p[5] + ny) * e - oy
+  if k ~= 1 then
+    local gx, gy = pointIn(l, b, w, h, origin[1])
+    gx, gy = gx + origin[2] * e, gy + origin[3] * e
+    l, b, w, h = gx + (l - gx) * k, gy + (b - gy) * k, w * k, h * k
+  end
+  return l, b, w, h
 end
 function InCombatLockdown() return combat end
 function debugprofilestop() return os.clock() * 1000 end
@@ -122,6 +200,7 @@ local function run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
     now = now + dt
+    advanceAnimations(dt)
     for i = #timers, 1, -1 do
       local t = timers[i]
       if now >= t.at then table.remove(timers, i); if not t.cancelled then t.fn(t) end end
