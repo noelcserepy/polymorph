@@ -42,14 +42,14 @@ local function fakeFrame(protected)
   -- Native animation groups, paused at full progress, as measured in the client:
   -- a Translation offset is in the frame's scaled units and ignores the Scale,
   -- and a Scale grows the frame around its origin point (CENTER by default).
-  f.nativeX, f.nativeY, f.nativeScale, f.nativeOrigin = 0, 0, 1, "CENTER"
+  f.nativeX, f.nativeY, f.nativeScale, f.nativeOrigin = 0, 0, 1, { "CENTER", 0, 0 }
   function f:CreateAnimationGroup()
     local ag = { playing = false, anims = {} }
     local function apply()
       local tr, sc = ag.anims.Translation, ag.anims.Scale
       f.nativeX, f.nativeY = ag.playing and tr and tr.ox or 0, ag.playing and tr and tr.oy or 0
       f.nativeScale = ag.playing and sc and sc.k or 1
-      f.nativeOrigin = sc and sc.origin or "CENTER"
+      f.nativeOrigin = sc and sc.origin or { "CENTER", 0, 0 }
     end
     function ag:CreateAnimation(kind)
       local a = { ox = 0, oy = 0, k = 1 }
@@ -57,7 +57,7 @@ local function fakeFrame(protected)
       function a:SetSmoothing() end
       function a:SetSmoothProgress() end
       function a:SetScaleFrom() end
-      function a:SetOrigin(point, x, y) assert(x == 0 and y == 0); self.origin = point; apply() end
+      function a:SetOrigin(point, x, y) self.origin = { point, x or 0, y or 0 }; apply() end
       function a:SetOffset(x, y) self.ox, self.oy = x, y; apply() end
       function a:SetScaleTo(x, y) assert(x == y); self.k = x; apply() end
       ag.anims[kind] = a
@@ -79,7 +79,9 @@ local function fakeFrame(protected)
     local s, k = self.s, self.nativeScale
     local ax, ay = (self.point[4] + self.nativeX) * s, (self.point[5] + self.nativeY) * s
     local px, py = pointOffset(self.point[1], self.w, self.h)
-    local ox, oy = pointOffset(self.nativeOrigin, self.w, self.h)
+    local o = self.nativeOrigin
+    local ox, oy = pointOffset(o[1], self.w, self.h)
+    ox, oy = ox + o[2], oy + o[3]
     -- The origin stays put and everything else scales away from it by k.
     local originX, originY = ax + (ox - px) * s, ay + (oy - py) * s
     return originX + (ax - originX) * k, originY + (ay - originY) * k
