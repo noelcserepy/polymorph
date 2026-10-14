@@ -157,13 +157,10 @@ local function between(v, a, b) return v > math.min(a, b) + 0.01 and v < math.ma
 -- rectangle on screen.
 local function look(f)
   local l, b, w, h = f:Rect()
-  return { f:IsVisible() and f:EffectiveAlpha() or 0, l, b, w, h, b + h, b + h / 2 }
+  return { f:IsVisible() and f:EffectiveAlpha() or 0, l, b, w, h, b + h }
 end
--- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height, 6 top,
--- 7 vertical center. A slide moves the whole frame, so bottom, top and center
--- must all animate. A resize keeps one of them still: the point it grows
--- around, whether the frame is anchored by its top, bottom or center.
-local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 3, 6, 7 }
+-- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height, 6 top.
+local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 6 }
 local function same(a, b, fields)
   for _, i in ipairs(fields or ALL) do if math.abs(a[i] - b[i]) > 0.01 then return false end end
   return true
@@ -230,20 +227,30 @@ end)
 check("2 toast slides in from above and leaves upward after 3 s", function()
   local toast = newFrame()
   toast:SetPoint("TOP", UIParent, "TOP", 0, -120)
-  local _, b0, _, h0 = toast:Rect()
+  local _, b0, w0, h0 = toast:Rect()
   local top = b0 + h0
+  -- A slide moves the toast without changing its size. Holding the size makes
+  -- its top edge an honest measure of the slide: resizing or scaling would
+  -- move edges without sliding.
+  local function keepsSize(samples)
+    for _, l in ipairs(samples) do
+      if not (near(l[4], w0, 0.5) and near(l[5], h0, 0.5)) then return false end
+    end
+    return true
+  end
   -- Direction is where the motion starts (coming in) or ends (leaving). A
   -- spring may overshoot past the anchor on the way.
-  local function above(l) return l[3] + l[5] > top + 0.5 end
+  local function above(l) return l[6] > top + 0.5 end
   local n, samples = transition(toast, function() M.notify(toast) end, 1, VERTICAL)
+  assert(keepsSize(samples), "changed size while shown")
   assert(n >= ANIMATED and above(samples[1]), "did not slide in from above")
-  local _, b, _, h = toast:Rect()
-  assert(toast.shown and near(b + h, top), "not in place after 1 s")
-  run(1.85)
-  _, b, _, h = toast:Rect()
-  assert(near(look(toast)[1], 1) and near(b + h, top), "started leaving before 3 s")
+  assert(toast.shown and near(look(toast)[6], top), "not in place after 1 s")
+  local _, held = transition(toast, function() end, 1.85, VERTICAL)
+  assert(keepsSize(held), "changed size while shown")
+  assert(near(look(toast)[1], 1) and near(look(toast)[6], top), "started leaving before 3 s")
   local still = look(toast)
   n, samples = transition(toast, function() end, 1.5, VERTICAL)
+  assert(keepsSize(samples), "changed size while shown")
   -- Sliding out starts by 3.3 s: the toast moves within 0.45 s of these samples,
   -- at 240 per second.
   local moved
@@ -344,7 +351,7 @@ check("6 list fades in one after another", function()
   end
   run(0.5)
   for i, r in ipairs(rows) do
-    assert(r:IsVisible() and near(r:EffectiveAlpha(), 1), "row " .. i .. " not fully visible at the end")
+    assert(near(look(r)[1], 1), "row " .. i .. " not fully visible at the end")
   end
 end)
 
