@@ -39,7 +39,7 @@ local cases = {
   { "rows fade while hidden", "row 1 did not fade in", { 'for i, row in ipairs(rows) do', 'for i, row in ipairs(rows) do row:Hide()' } },
   { "hover drifts sideways while growing", "center moved while growing", { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1.15, x = 30 }, { duration = 0.2, onComplete = function() Poly(self):to({ x = 0 }, { duration = 0.2 }) end })' } },
   { "hover drifts sideways while shrinking", "center moved while shrinking", { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1, x = 30 }, { duration = 0.2, onComplete = function() Poly(self):to({ x = 0 }, { duration = 0.2 }) end })' } },
-  { "toast leaves 0.3 s early", "started leaving before 3 s", { 'C_Timer.After(3,', 'C_Timer.After(2.7,' } },
+  { "toast leaves 0.3 s early", "moved or hid before 3 s", { 'C_Timer.After(3,', 'C_Timer.After(2.7,' } },
   { "hover button never visible", "button not visible after creation", { '  holder:SetSize(40, 40)\n', '  holder:SetSize(40, 40)\n  holder:Hide()\n' } },
   { "bar jumps partway on the first event", "jumped", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.5 then Poly(bar):set({ width = 150 }) end Poly(bar):to({ width = 200 * fraction }) end' } },
   { "bar jumps partway mid-animation", "jumped", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.4 then Poly(bar):set({ width = 90 }) end Poly(bar):to({ width = 200 * fraction }) end' } },
@@ -61,6 +61,7 @@ local cases = {
   { "toast scales slightly and jumps in", "changed size while shown", { 'Poly(toast):show("above", { spring = "stiff" })', 'Poly(toast):show("above", { spring = "stiff" }); Poly(toast):to({ y = 0 }, { duration = 0, delay = 0.1 }); Poly(toast):to({ scale = 0.998 }, { duration = 0.2, onComplete = function() Poly(toast):to({ scale = 1 }, { duration = 0.2 }) end })' } },
   { "toast scales slightly and jumps out", "changed size while shown", { 'C_Timer.After(3, function() Poly(toast):hide("above") end)', 'C_Timer.After(3, function() Poly(toast):hide("above"); Poly(toast):to({ y = 16 }, { duration = 0, delay = 0.1 }); Poly(toast):to({ scale = 0.998 }, { duration = 0.2 }) end)' } },
   { "toast scales slightly at 3 s, slides at 3.5 s", "changed size while shown", { 'C_Timer.After(3, function() Poly(toast):hide("above") end)', 'C_Timer.After(3, function() Poly(toast):to({ scale = 0.998 }, { duration = 0.2 }) end) C_Timer.After(3.5, function() Poly(toast):hide("above", { duration = 0.2 }) end)' } },
+  { "toast leaves at 2 s and comes back", "moved or hid before 3 s", { 'C_Timer.After(3, function() Poly(toast):hide("above") end)', 'C_Timer.After(2, function() Poly(toast):hide("above", { duration = 0.2 }) end) C_Timer.After(2.5, function() Poly(toast):show("above", { duration = 0.2 }) end) C_Timer.After(3, function() Poly(toast):hide("above") end)' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 

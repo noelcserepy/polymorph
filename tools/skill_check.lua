@@ -252,9 +252,12 @@ check("2 toast slides in from above and leaves upward after 3 s", function()
   assert(keepsSize(samples), "changed size while shown")
   assert(n >= ANIMATED and above(samples[1]), "did not slide in from above")
   assert(toast.shown and near(look(toast)[6], top), "not in place after 1 s")
-  local _, held = transition(toast, function() end, 1.85, VERTICAL)
-  assert(keepsSize(held), "changed size while shown")
-  assert(near(look(toast)[1], 1) and near(look(toast)[6], top), "started leaving before 3 s")
+  -- Until 3 s the toast stays put: fully visible, at its anchor, at its size.
+  for _ = 1, math.floor(1.85 * 240) do
+    run(1 / 240, 240)
+    local l = look(toast)
+    assert(near(l[1], 1) and near(l[6], top) and keepsSize({ l }), "moved or hid before 3 s")
+  end
   local still = look(toast)
   n, samples = transition(toast, function() end, 1.5, VERTICAL)
   assert(keepsSize(samples), "changed size while shown")
