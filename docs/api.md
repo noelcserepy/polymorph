@@ -176,8 +176,8 @@ Measured in the client: the four curves, reverse playback, and that getters igno
 `Poly.stats()` returns:
 - `frames`: driver updates counted,
 - `ms`: total Lua time in the driver,
-- `peakTracks`: the most properties moving at once,
-- `active`: frames currently moving.
+- `peakTracks`: the most properties the driver stepped in one update. Native tweens count only while they wait out a delay.
+- `active`: frames currently moving, including frames whose tweens only the game draws.
 
 `Poly.resetStats()` clears the counters.
 
