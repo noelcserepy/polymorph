@@ -259,7 +259,7 @@ local function update(_, elapsed)
         prop.write(m, t.value)
         if rest then
           m.tracks[name] = nil
-          if t.visibility and m.awayKeys and t.target == m.rest[name] then m.awayKeys[name] = nil end
+          if m.awayKeys and m.awayKeys[name] and t.target == m.rest[name] then m.awayKeys[name] = nil end
           if t.onDone then queueCallback(t.onDone, m.frame, name) end
         end
       end
@@ -344,7 +344,6 @@ local function animate(m, targets, opts, visibility)
     if ease then
       t.ease, t.duration, t.elapsed, t.from = ease, opts.duration, 0, t.value
     end
-    t.visibility = visibility
     if visibility then
       m.awayKeys = m.awayKeys or {}
       m.awayKeys[name] = true
@@ -384,11 +383,12 @@ end
 
 -- Stops one property, or all of them, where they are.
 function Motion:stop(name)
-  for n in pairs(self.tracks) do
-    if name == nil or n == name then
-      self.tracks[n] = nil
-      release(self, n)
-    end
+  if name then
+    self.tracks[name] = nil
+    release(self, name)
+  else
+    for n in pairs(self.tracks) do self.tracks[n] = nil end
+    self.awayKeys = nil
   end
   return self
 end
@@ -453,7 +453,7 @@ local function takeVisibility(m)
   return m.visibilityToken
 end
 
--- Rest values for the `away` properties and everything still in awayKeys.
+-- Rest values for the `away` properties and every property show()/hide() own.
 local function restingTargets(m, away)
   local targets = {}
   for name in pairs(away) do targets[name] = m.rest[name] end
@@ -494,7 +494,8 @@ function Motion:hide(away, opts)
       return
     end
     self.frame:Hide()
-    self:set(restingTargets(self, away)) -- set() releases each property it resets
+    -- Only what show()/hide() still own. set() releases each one it resets.
+    self:set(restingTargets(self, {}))
     if userDone then userDone(self.frame) end
   end
   local copy = {}

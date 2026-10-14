@@ -325,4 +325,43 @@ test("taking over one show property keeps the others' own arrival", function()
   assert(not f.shown and f.s == 1.5, "hide reset a property the user had animated: " .. f.s)
 end)
 
+test("protected frame: set() during a deferred hide keeps its value", function()
+  local f = fakeFrame(true)
+  combat = true
+  local m = Poly(f)
+  m:hide("fade", { duration = 0.1 })
+  run(0.3)
+  m:set({ alpha = 0.4 })
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  assert(not f.shown and f.alpha == 0.4, "deferred hide reset a taken-over alpha: " .. f.alpha)
+end)
+
+test("protected frame: to() during a deferred hide keeps its value", function()
+  local f = fakeFrame(true)
+  combat = true
+  local m = Poly(f)
+  m:hide("fade", { duration = 0.1 })
+  run(0.3)
+  m:to({ alpha = 0.4 }, { duration = 0.1 })
+  run(0.3)
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  assert(not f.shown and f.alpha == 0.4, "deferred hide reset a taken-over alpha: " .. f.alpha)
+end)
+
+test("stop() releases a property that already arrived away from rest", function()
+  local f = fakeFrame(true)
+  combat = true
+  local m = Poly(f)
+  m:hide("below", { duration = 0.1 })
+  run(0.3)
+  m:stop("y")
+  m:hide("fade", { duration = 0.1 })
+  run(0.3)
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  assert(not f.shown and m:get("y") == -16, "hide reset a stopped y: " .. m:get("y"))
+end)
+
 print(("CORE OK: %d tests"):format(passed))
