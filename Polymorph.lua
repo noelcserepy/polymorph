@@ -10,8 +10,8 @@
 -- Combat: on a protected frame (or the parent or anchor of one) in combat, the
 -- game blocks SetPoint, SetSize, Show and Hide, and Polymorph treats SetScale the
 -- same way. It never calls them there.
--- Alpha keeps animating, x and y keep animating through a native
--- animation, and the other blocked properties wait for combat to end.
+-- Alpha keeps animating, x, y and scale keep animating through native
+-- animations, and width and height wait for combat to end.
 -- docs/api.md has the details.
 local _, ns = ...
 
@@ -106,13 +106,20 @@ end
 -- x and y are offsets from the frame's first anchor as it was when Polymorph
 -- first touched the frame. offsetX/Y is where the frame shows; layoutX/Y is
 -- where its anchor actually is. They differ only while combat lockdown forces
--- drawing through the puppet.
+-- drawing through the puppet. The same goes for scale: drawScale is where it
+-- shows and layoutScale is the frame's own scale, both set only while puppeted.
 --
--- Puppet: a native Translation animation, played and paused at full progress.
--- SetOffset on a paused animation moves the frame live, and the game allows
--- that on protected frames in combat, where SetPoint is blocked. When combat
--- ends, commit() anchors the frame where it shows and stops the puppet, which
--- lands on the same pixel. Measured in dev/jobs/core/native_puppet.lua.
+-- Puppet: a native Translation and Scale, played and paused at full progress.
+-- SetOffset and SetScaleTo on a paused animation change the drawing live, and
+-- the game allows that on protected frames in combat, where SetPoint and
+-- SetScale are blocked. When combat ends, commit() sets the frame to what it
+-- shows and stops the puppet, which lands on the same pixel.
+--
+-- SetScale also scales the anchor offset, while the Scale animation grows
+-- around the frame's anchor point. Translation offsets are in the frame's own
+-- scaled units and ignore the Scale animation, so the puppet moves the anchor
+-- point to where SetScale would put it: offset * k - layout, with
+-- k = drawScale / layoutScale. Both facts were measured in the client.
 local puppeted = {} -- motion -> true while its puppet is displaced
 
 local function puppetMove(m)
@@ -122,20 +129,39 @@ local function puppetMove(m)
     local tr = ag:CreateAnimation("Translation")
     tr:SetDuration(1)
     tr:SetSmoothing("NONE")
-    p = { ag = ag, tr = tr }
+    local sc = ag:CreateAnimation("Scale")
+    sc:SetDuration(1)
+    sc:SetSmoothing("NONE")
+    sc:SetScaleFrom(1, 1)
+    sc:SetScaleTo(1, 1)
+    p = { ag = ag, tr = tr, sc = sc, k = 1 }
     m.puppet = p
   end
+  local b = m.base
   if not puppeted[m] then
+    m.layoutScale = m.frame:GetScale()
+    m.drawScale = m.drawScale or m.layoutScale
+    p.sc:SetOrigin(b[1], 0, 0)
     p.ag:Play()
     p.ag:Pause()
     p.tr:SetSmoothProgress(1)
+    p.sc:SetSmoothProgress(1)
     puppeted[m] = true
   end
-  p.tr:SetOffset(m.offsetX - m.layoutX, m.offsetY - m.layoutY)
+  local k = m.drawScale / m.layoutScale
+  if k ~= p.k then
+    p.sc:SetScaleTo(k, k)
+    p.k = k
+  end
+  p.tr:SetOffset((b[4] + m.offsetX) * k - (b[4] + m.layoutX), (b[5] + m.offsetY) * k - (b[5] + m.layoutY))
 end
 
 local function commit(m)
   local b = m.base
+  if m.drawScale then
+    if m.drawScale ~= m.layoutScale then m.frame:SetScale(m.drawScale) end
+    m.drawScale = nil
+  end
   m.frame:SetPoint(b[1], b[2], b[3], b[4] + m.offsetX, b[5] + m.offsetY)
   m.layoutX, m.layoutY = m.offsetX, m.offsetY
   if puppeted[m] then
@@ -144,7 +170,7 @@ local function commit(m)
   end
 end
 
-local function writePoint(m)
+local function writeLayout(m)
   if m.isLocked then puppetMove(m) else commit(m) end
 end
 
@@ -155,9 +181,17 @@ local PROPS = {
     write = function(m, v) m.frame:SetAlpha(min(1, max(0, v))) end,
   },
   scale = {
-    restricted = true, precision = 0.0005,
-    read = function(m) return m.frame:GetScale() end,
-    write = function(m, v) m.frame:SetScale(max(0.0001, v)) end,
+    restricted = true, native = true, precision = 0.0005,
+    read = function(m) return m.drawScale or m.frame:GetScale() end,
+    write = function(m, v)
+      v = max(0.0001, v)
+      if m.isLocked or puppeted[m] then
+        m.drawScale = v
+        writeLayout(m)
+      else
+        m.frame:SetScale(v)
+      end
+    end,
   },
   width = {
     restricted = true, precision = 0.05,
@@ -172,12 +206,12 @@ local PROPS = {
   x = {
     restricted = true, native = true, precision = 0.05,
     read = function(m) return m.offsetX end,
-    write = function(m, v) m.offsetX = v; writePoint(m) end,
+    write = function(m, v) m.offsetX = v; writeLayout(m) end,
   },
   y = {
     restricted = true, native = true, precision = 0.05,
     read = function(m) return m.offsetY end,
-    write = function(m, v) m.offsetY = v; writePoint(m) end,
+    write = function(m, v) m.offsetY = v; writeLayout(m) end,
   },
 }
 Poly.properties = PROPS
@@ -526,7 +560,7 @@ function Motion:hide(away, opts)
   local copy = {}
   for k, v in pairs(opts) do copy[k] = v end
   copy.onComplete = finish
-  -- Locked: animate only what the game allows (alpha, and x/y via the puppet).
+  -- Locked: animate only what the game allows (alpha, and x/y/scale via the puppet).
   -- The rest would wait for combat to end, and a fading frame does not need it.
   local targets = away
   if locked(self) then

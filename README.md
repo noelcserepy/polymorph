@@ -84,12 +84,12 @@ In combat, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide` on protected
 | During combat lockdown, on a protected frame | What Polymorph does |
 | --- | --- |
 | `alpha` | Animates normally. |
-| `x`, `y` | Animates through a paused native animation, which the game allows. When combat ends, the frame is anchored where it shows. |
-| `width`, `height`, `scale` | Waits, then animates when combat ends. |
-| `hide()` | Fades and slides now. The real `Hide()` happens when combat ends, and the faded frame still takes clicks until then. |
+| `x`, `y`, `scale` | Animates through paused native animations. When combat ends, the frame is anchored and scaled where it shows. |
+| `width`, `height` | Waits, then animates when combat ends. |
+| `hide()` | Fades, slides and shrinks now. The real `Hide()` happens when combat ends, and the faded frame still takes clicks until then. |
 | `show()` on a hidden frame | Waits for combat to end. |
 
-All of this was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions.
+Everything except `scale` was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions. `scale` was measured out of combat so far.
 
 ## Performance
 
