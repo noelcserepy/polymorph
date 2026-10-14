@@ -54,7 +54,7 @@ Animate several properties in one call. Each one moves on its own track.
 
 Without a `duration`, `:to()` uses a spring. Presets use react-spring's names and values: `default`, `gentle`, `wobbly`, `stiff`, `slow`, `molasses`. You can also pass your own `{ stiffness, damping, mass }`.
 
-With a `duration`, it tweens. Easings: `linear`, `inQuad`, `outQuad`, `inOutQuad`, `outCubic` (the default), `inOutCubic`, `ease`, `easeOut`, `easeInOut`. Any CSS-style cubic-bezier works too:
+With a `duration`, it tweens. Easings: `linear`, `inSine`, `outSine`, `inOutSine`, `inQuad`, `outQuad`, `inOutQuad`, `outCubic` (the default), `inOutCubic`, `ease`, `easeOut`, `easeInOut`. Any CSS-style cubic-bezier works too:
 
 ```lua
 Poly(f):to({ x = 120 }, { duration = 0.4, ease = { 0.34, 1.56, 0.64, 1 } }) -- overshoots
@@ -94,6 +94,8 @@ Everything in this table was tested on `SecureActionButtonTemplate` buttons in r
 ## Performance
 
 One shared `OnUpdate` drives every animation, and it switches itself off when nothing moves. Polymorph creates no timers per animation. That matters because the game caps each addon at 500 timers. In a test with 200 frames animating three properties each (600 springs at once), the driver used 0.89 ms of Lua time per frame, the median of 7 runs. A typical addon animates a few dozen properties at a time.
+
+Tweens of `alpha`, `x` or `y` with `linear`, `inSine`, `outSine` or `inOutSine` run as the game's own animations, with no Lua per frame. These four are the curves the game has built in.
 
 ## Reference
 
