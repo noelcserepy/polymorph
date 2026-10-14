@@ -133,7 +133,8 @@ local function puppetMove(m)
     sc:SetDuration(1)
     sc:SetSmoothing("NONE")
     sc:SetScaleFrom(1, 1)
-    p = { ag = ag, tr = tr, sc = sc }
+    sc:SetScaleTo(1, 1)
+    p = { ag = ag, tr = tr, sc = sc, k = 1 }
     m.puppet = p
   end
   local b = m.base
@@ -148,7 +149,10 @@ local function puppetMove(m)
     puppeted[m] = true
   end
   local k = m.drawScale / m.layoutScale
-  p.sc:SetScaleTo(k, k)
+  if k ~= p.k then
+    p.sc:SetScaleTo(k, k)
+    p.k = k
+  end
   p.tr:SetOffset((b[4] + m.offsetX) * k - (b[4] + m.layoutX), (b[5] + m.offsetY) * k - (b[5] + m.layoutY))
 end
 

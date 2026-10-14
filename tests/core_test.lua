@@ -40,15 +40,16 @@ local function fakeFrame(protected)
   end
   function f:IsProtected() return protected end
   -- Native animation groups, paused at full progress, as measured in the client:
-  -- a Translation offset is in the frame's scaled units, and a Scale grows the
-  -- frame around its origin, which Polymorph sets to the anchor point.
-  f.nativeX, f.nativeY, f.nativeScale = 0, 0, 1
+  -- a Translation offset is in the frame's scaled units and ignores the Scale,
+  -- and a Scale grows the frame around its origin point (CENTER by default).
+  f.nativeX, f.nativeY, f.nativeScale, f.nativeOrigin = 0, 0, 1, "CENTER"
   function f:CreateAnimationGroup()
     local ag = { playing = false, anims = {} }
     local function apply()
       local tr, sc = ag.anims.Translation, ag.anims.Scale
       f.nativeX, f.nativeY = ag.playing and tr and tr.ox or 0, ag.playing and tr and tr.oy or 0
       f.nativeScale = ag.playing and sc and sc.k or 1
+      f.nativeOrigin = sc and sc.origin or "CENTER"
     end
     function ag:CreateAnimation(kind)
       local a = { ox = 0, oy = 0, k = 1 }
@@ -56,7 +57,7 @@ local function fakeFrame(protected)
       function a:SetSmoothing() end
       function a:SetSmoothProgress() end
       function a:SetScaleFrom() end
-      function a:SetOrigin(point) assert(point == f.point[1], "scale origin is not the anchor point") end
+      function a:SetOrigin(point, x, y) assert(x == 0 and y == 0); self.origin = point; apply() end
       function a:SetOffset(x, y) self.ox, self.oy = x, y; apply() end
       function a:SetScaleTo(x, y) assert(x == y); self.k = x; apply() end
       ag.anims[kind] = a
@@ -67,9 +68,24 @@ local function fakeFrame(protected)
     function ag:Stop() self.playing = false; apply() end
     return ag
   end
+  -- Where a named point of the frame sits, relative to its center, in its own units.
+  local function pointOffset(point, w, h)
+    local x = point:find("LEFT") and -w / 2 or point:find("RIGHT") and w / 2 or 0
+    local y = point:find("TOP") and h / 2 or point:find("BOTTOM") and -h / 2 or 0
+    return x, y
+  end
   -- Where the anchor point draws, in parent units, and the drawn scale.
-  function f:VisualX() return (self.point[4] + self.nativeX) * self.s end
-  function f:VisualY() return (self.point[5] + self.nativeY) * self.s end
+  function f:Visual()
+    local s, k = self.s, self.nativeScale
+    local ax, ay = (self.point[4] + self.nativeX) * s, (self.point[5] + self.nativeY) * s
+    local px, py = pointOffset(self.point[1], self.w, self.h)
+    local ox, oy = pointOffset(self.nativeOrigin, self.w, self.h)
+    -- The origin stays put and everything else scales away from it by k.
+    local originX, originY = ax + (ox - px) * s, ay + (oy - py) * s
+    return originX + (ax - originX) * k, originY + (ay - originY) * k
+  end
+  function f:VisualX() return (self:Visual()) end
+  function f:VisualY() return select(2, self:Visual()) end
   function f:VisualScale() return self.s * self.nativeScale end
   f.shown = true
   f.hideCalls = 0
@@ -180,6 +196,7 @@ end)
 
 test("protected frame in combat: scale draws through the puppet and hands over without a jump", function()
   local f = fakeFrame(true)
+  f.point = { "TOPLEFT", nil, "TOPLEFT", 10, 20 } -- a corner anchor, so the scale origin matters
   local m = Poly(f)
   combat = true
   m:to({ scale = 2, x = 30 }, { duration = 1, ease = "linear" })
