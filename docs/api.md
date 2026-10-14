@@ -151,7 +151,7 @@ The `alpha`, `x`, `y` and `hide()` rows were tested on `SecureActionButtonTempla
 ## Performance and limits
 
 - **One driver.** A single shared `OnUpdate` frame steps every animation. It turns itself off when nothing moves.
-- **Few game calls.** Each update makes one `InCombatLockdown()` call, one `SetPoint` per frame for `x` and `y` together, and one `SetSize` per frame for `width` and `height` together.
+- **Few game calls.** Stepping the animations makes one `InCombatLockdown()` call per update. Each frame then gets at most one `SetPoint` for `x` and `y` together, and one `SetSize` for `width` and `height` together, or `SetWidth` or `SetHeight` when only one moves. Finishing work, such as a `hide()` resetting the frame, makes its own calls.
 - **No timers.** Polymorph makes no per-animation timers or animation groups. The game caps each addon at 500 timers and 2000 animation groups. A frame animated in combat gets one animation group, created once.
 - **Allocation.** While animations only run, the driver allocates nothing per frame. Allocation happens when work starts or ends:
   - Each `to()` call allocates one small closure, plus a track table for each property that wasn't already moving. `show()` and `hide()` also build small tables of targets.

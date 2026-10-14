@@ -89,7 +89,9 @@ for _, sc in ipairs(scenarios) do
   instrument(frames, true)
   table.sort(samples)
   local lua = samples[math.ceil(ROUNDS / 2)]
-  for _, f in ipairs(frames) do Poly(f):to(sc[2], sc[4]) end
+  -- Retarget once more, away from where the last round went, so every track moves while counted.
+  local away = (ROUNDS + 1) % 2 == 1 and sc[2] or sc[3]
+  for _, f in ipairs(frames) do Poly(f):to(away, sc[4]) end
   local perTrack, priced = countCalls(20, N * count)
   print(("%-36s %9.3f %7.2f %13.2f"):format(sc[1], lua, perTrack, lua + priced))
   for _, f in ipairs(frames) do Poly(f):stop() end

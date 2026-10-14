@@ -182,8 +182,9 @@ local function writeLayout(m)
   if m.isLocked then puppetMove(m) else commit(m) end
 end
 
--- The driver stages width and height in these fields, then writes them in one
--- call per frame. x and y stage straight into offsetX and offsetY.
+-- The one writer of width and height: it clamps them and picks the game call.
+-- The driver stages both, then writes them in one call per frame. set() stages
+-- one and writes at once. x and y stage straight into offsetX and offsetY.
 local function writeSize(m)
   local w, h = m.stagedWidth, m.stagedHeight
   m.stagedWidth, m.stagedHeight = nil, nil
@@ -218,13 +219,13 @@ local PROPS = {
   width = {
     restricted = true, precision = 0.05,
     read = function(m) return m.frame:GetWidth() end,
-    write = function(m, v) m.frame:SetWidth(max(0, v)) end,
+    write = function(m, v) m.stagedWidth = v; writeSize(m) end,
     staged = "stagedWidth", flush = writeSize,
   },
   height = {
     restricted = true, precision = 0.05,
     read = function(m) return m.frame:GetHeight() end,
-    write = function(m, v) m.frame:SetHeight(max(0, v)) end,
+    write = function(m, v) m.stagedHeight = v; writeSize(m) end,
     staged = "stagedHeight", flush = writeSize,
   },
   x = {
