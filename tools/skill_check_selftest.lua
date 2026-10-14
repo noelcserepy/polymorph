@@ -41,8 +41,8 @@ local cases = {
   { "hover drifts sideways while shrinking", "center moved while shrinking", { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1, x = 30 }, { duration = 0.2, onComplete = function() Poly(self):to({ x = 0 }, { duration = 0.2 }) end })' } },
   { "toast leaves 0.3 s early", "started leaving before 3 s", { 'C_Timer.After(3,', 'C_Timer.After(2.7,' } },
   { "hover button never visible", "button not visible after creation", { '  holder:SetSize(40, 40)\n', '  holder:SetSize(40, 40)\n  holder:Hide()\n' } },
-  { "bar jumps partway on the first event", "jumped 50.1 to 100", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.5 then Poly(bar):set({ width = 150 }) end Poly(bar):to({ width = 200 * fraction }) end' } },
-  { "bar jumps partway mid-animation", "jumped 10.0 toward 80", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.4 then Poly(bar):set({ width = 90 }) end Poly(bar):to({ width = 200 * fraction }) end' } },
+  { "bar jumps partway on the first event", "jumped", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.5 then Poly(bar):set({ width = 150 }) end Poly(bar):to({ width = 200 * fraction }) end' } },
+  { "bar jumps partway mid-animation", "jumped", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.4 then Poly(bar):set({ width = 90 }) end Poly(bar):to({ width = 200 * fraction }) end' } },
   { "hover button fully transparent", "button not visible after creation", { '  b:SetSize(40, 40)\n', '  b:SetSize(40, 40)\n  b:SetAlpha(0)\n' } },
   { "rows fade under a transparent parent", "row 1 did not fade in", { 'for i, row in ipairs(rows) do', 'for i, row in ipairs(rows) do row:GetParent():SetAlpha(0)' } },
   { "rows vanish after fading in", "row 1 not fully visible at the end", { 'duration = 0.3, delay = (i - 1) * 0.05 })', 'duration = 0.3, delay = (i - 1) * 0.05, onComplete = function(r) r:SetAlpha(0) end })' } },
@@ -50,6 +50,7 @@ local cases = {
   { "hover button vanishes after growing", "button not visible after growing", { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1.15 }, { spring = "stiff", onComplete = function(f) f:Hide() end })', 'b:SetScript("OnLeave", function(self) Poly(self)', 'b:SetScript("OnLeave", function(self) self:Show(); Poly(self)' } },
   { "hover button vanishes after shrinking", "button not visible after shrinking", { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1 }, { spring = "stiff", onComplete = function(f) f:Hide() end })' } },
   { "toast leaves 0.5 s late", "did not start leaving by 3.3 s", { 'C_Timer.After(3,', 'C_Timer.After(3.5,' } },
+  { "bar jumps on the interrupting event", "jumped", { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.8 then bar:SetWidth(130) end Poly(bar):to({ width = 200 * fraction }) end' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 

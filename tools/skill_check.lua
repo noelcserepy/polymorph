@@ -175,10 +175,13 @@ local function transition(f, action, seconds, fields)
   local before = look(f)
   action()
   local samples = {}
+  -- Only what the player can see counts: shown, and not fully transparent.
+  -- The first sample is right after the call, before the driver runs.
+  local function sample() local l = look(f); if l[1] > 0.01 then samples[#samples + 1] = l end end
+  sample()
   for _ = 1, math.floor(seconds * 240) do
     run(1 / 240, 240)
-    -- Only what the player can see counts: shown, and not fully transparent.
-    if f:IsVisible() and f:EffectiveAlpha() > 0.01 then samples[#samples + 1] = look(f) end
+    sample()
   end
   local after = look(f)
   -- Distinct in-between looks: a frame that holds still, then jumps, gives one.
@@ -235,7 +238,7 @@ check("2 toast slides in from above and leaves upward after 3 s", function()
   assert(toast.shown and near(b + h, top), "not in place after 1 s")
   run(1.85)
   _, b, _, h = toast:Rect()
-  assert(toast:IsVisible() and near(toast.alpha, 1) and near(b + h, top), "started leaving before 3 s")
+  assert(near(look(toast)[1], 1) and near(b + h, top), "started leaving before 3 s")
   local still = look(toast)
   n, samples = transition(toast, function() end, 1.5, VERTICAL)
   -- Leaving starts by 3.3 s: within 0.45 s of these samples, at 240 per second.
