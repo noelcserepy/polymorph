@@ -13,3 +13,4 @@ ignore:
     - .luarc.json
     - tools
     - REVIEW.md
+    - skills
