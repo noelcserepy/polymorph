@@ -166,11 +166,11 @@ local function same(a, b, fields)
   return true
 end
 
--- Runs `action`, then samples what the frame draws at 240 fps for `seconds`.
--- Counts distinct in-between looks: shown, and matching neither the look
--- before the action nor the look at the end. With `fields` (default: any change), every
--- listed field must pass through in-between values on its own, and the count
--- is the smallest of theirs. Also returns the samples, for direction checks.
+-- Runs `action`, then samples what the frame draws at 240 fps for `seconds`,
+-- keeping the samples the player can see. Counts distinct values in the middle
+-- of each field's travel. With `fields`, every listed field must move through
+-- its middle on its own, and the count is the smallest of theirs. Without, the
+-- count is the largest. Also returns the samples, and the biggest step.
 local function transition(f, action, seconds, fields)
   local before = look(f)
   action()
@@ -183,17 +183,19 @@ local function transition(f, action, seconds, fields)
     run(1 / 240, 240)
     sample()
   end
-  local after = look(f)
-  -- Distinct in-between looks: a frame that holds still, then jumps, gives one.
-  local function count(only)
+  -- Distinct values in the middle of the travel: between 20% and 80% of the
+  -- way from the first value seen to the last. A jump never lands there, and
+  -- a small wobble stays near the ends.
+  local function count(i)
+    local first, last = samples[1], samples[#samples]
+    if not first then return 0 end
+    local a, b = first[i], last[i]
+    if math.abs(b - a) < 0.01 then return 0 end
     local seen, n = {}, 0
     for _, l in ipairs(samples) do
-      if not same(l, before, only) and not same(l, after, only) then
-        local key = {}
-        for _, i in ipairs(only) do key[#key + 1] = ("%.2f"):format(l[i]) end
-        key = table.concat(key, " ")
-        if not seen[key] then seen[key] = true; n = n + 1 end
-      end
+      local k = (l[i] - a) / (b - a)
+      local key = ("%.2f"):format(l[i])
+      if k >= 0.2 and k <= 0.8 and not seen[key] then seen[key] = true; n = n + 1 end
     end
     return n
   end
@@ -203,9 +205,14 @@ local function transition(f, action, seconds, fields)
     for _, i in ipairs(fields or ALL) do jump = math.max(jump, math.abs(l[i] - last[i])) end
     last = l
   end
-  if not fields then return count(ALL), samples, jump end
+  -- With no fields named, any one field moving smoothly is enough.
+  if not fields then
+    local most = 0
+    for _, i in ipairs(ALL) do most = math.max(most, count(i)) end
+    return most, samples, jump
+  end
   local least = math.huge
-  for _, i in ipairs(fields) do least = math.min(least, count({ i })) end
+  for _, i in ipairs(fields) do least = math.min(least, count(i)) end
   return least, samples, jump
 end
 local ANIMATED = 3 -- distinct in-between looks: real motion, not a hold and a jump
@@ -234,7 +241,7 @@ check("2 toast slides in from above and leaves upward after 3 s", function()
   -- move edges without sliding.
   local function keepsSize(samples)
     for _, l in ipairs(samples) do
-      if not (near(l[4], w0, 0.5) and near(l[5], h0, 0.5)) then return false end
+      if not (near(l[4], w0, 0.05) and near(l[5], h0, 0.05)) then return false end
     end
     return true
   end
@@ -255,7 +262,7 @@ check("2 toast slides in from above and leaves upward after 3 s", function()
   -- at 240 per second.
   local moved
   for i, l in ipairs(samples) do
-    if not same(l, still, VERTICAL) then moved = i; break end
+    if math.abs(l[6] - still[6]) > 2 then moved = i; break end
   end
   assert(moved and moved <= 0.45 * 240, "did not start leaving by 3.3 s")
   assert(n >= ANIMATED and above(samples[#samples]), "did not slide out upward")
