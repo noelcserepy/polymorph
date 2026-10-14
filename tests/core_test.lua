@@ -439,6 +439,34 @@ test("native tween handed to the puppet mid-update moves one frame's worth, not 
   end
 end)
 
+test("native tween handed to Lua: a delay waits and velocity carries over", function()
+  -- A delayed retarget starts moving only once its delay is over.
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  m:to({ x = 0 }, { duration = 1, ease = "outCubic", delay = 0.5 })
+  run(0.5)
+  assert(near(m:get("x"), 50, 1e-6), "moved during its delay: " .. m:get("x"))
+  run(0.1)
+  -- outCubic 50 -> 0, about 0.08 s in: near 39.
+  assert(m:get("x") > 35 and m:get("x") < 45, "x " .. m:get("x") .. " 0.1 s after the delay")
+
+  -- A handover in combat keeps the tween's velocity for a spring retarget.
+  f = fakeFrame(true)
+  m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  combat = true
+  m:to({ scale = 2 }, { duration = 0.5 })
+  run(1 / 60)
+  local _, velocity = m:get("x")
+  assert(near(velocity, 100, 1e-6), "velocity " .. velocity .. " after the handover")
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  run(2)
+end)
+
 test("native tween: alpha outside 0..1 stays in Lua, so stopping does not jump", function()
   local f = fakeFrame()
   f.alpha = 0

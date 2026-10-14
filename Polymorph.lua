@@ -315,7 +315,7 @@ local function stepTween(t, dt)
   local last, from = t.value, t.from
   local value = from + (t.target - from) * t.ease(p)
   t.value = value
-  t.velocity = dt > 0 and (value - last) / dt or 0
+  if dt > 0 then t.velocity = (value - last) / dt end
   return p >= 1
 end
 
@@ -339,9 +339,11 @@ end
 
 local tryNative -- defined with the other native tween code below
 
-local function update(_, elapsed)
+local function update()
   local started = profile()
-  local dt = min(elapsed, 0.1)
+  -- Each Lua track moves by the time since it last moved, so a track that
+  -- joined or left native drawing this frame moves only by what is left.
+  local now = GetTime()
   local tracks = 0
   local inCombat = InCombatLockdown()
   for m in pairs(active) do
@@ -358,40 +360,36 @@ local function update(_, elapsed)
       -- tryNative owns the start rule. Only a tween that hasn't stepped can
       -- start, so this filter skips the call for every running track.
       if t.elapsed == 0 then tryNative(m, name, t, isLocked) end
-      if t.native then
-        -- Drawn by the game. Its OnFinished arrives it.
-      elseif t.delay > 0 then
-        t.delay = t.delay - dt
+      -- A native track is drawn by the game, and its OnFinished arrives it.
+      if not t.native then
         stepped = true
-      elseif not (isLocked and waitsWhileLocked(prop)) then
-        -- A track that left native drawing already holds its value as of that
-        -- moment, so it moves only by the time since.
-        local step = dt
-        if t.convertedAt then
-          step = GetTime() - t.convertedAt
-          t.convertedAt = nil
+        local step = now - t.time
+        if step > 0.1 then step = 0.1 end -- a long hitch doesn't make a spring jump
+        t.time = now
+        if t.delay > 0 then
+          t.delay = t.delay - step
+        elseif not (isLocked and waitsWhileLocked(prop)) then
+          local rest
+          if t.spring then rest = stepSpring(t, step) else rest = stepTween(t, step) end
+          if rest then t.value = t.target end
+          local staged = prop.staged
+          if staged then
+            m[staged] = t.value
+            local flush = prop.flush
+            if not flush1 or flush1 == flush then flush1 = flush else flush2 = flush end
+          else
+            prop.write(m, t.value)
+          end
+          if rest then arrive(m, name, t) end
         end
-        local rest
-        if t.spring then rest = stepSpring(t, step) else rest = stepTween(t, step) end
-        if rest then t.value = t.target end
-        local staged = prop.staged
-        if staged then
-          m[staged] = t.value
-          local flush = prop.flush
-          if not flush1 or flush1 == flush then flush1 = flush else flush2 = flush end
-        else
-          prop.write(m, t.value)
-        end
-        if rest then arrive(m, name, t) else stepped = true end
-      else
-        stepped = true
       end
     end
     if flush1 then flush1(m) end
     if flush2 then flush2(m) end
     -- Native tracks need no driver, so a frame with only those goes idle. A
-    -- native track can turn into a Lua track during the loop, so look again.
-    if not stepped then
+    -- native track can turn into a Lua track during the loop, and a Lua track
+    -- can arrive, so look again.
+    if not stepped or next(m.tracks) == nil then
       local idle = true
       for _, t in pairs(m.tracks) do
         if not t.native then idle = false; break end
@@ -473,7 +471,6 @@ function tryNative(m, name, t, isLocked)
   if not ch then return false end
   local smoothing, a = NATIVE_SMOOTHING[t.ease], ch.anim
   a:SetDuration(t.duration)
-  ch.reverse = name ~= "alpha"
   if name == "alpha" then
     a:SetSmoothing(smoothing.forward)
     a:SetFromAlpha(t.value)
@@ -493,7 +490,7 @@ function tryNative(m, name, t, isLocked)
     commit(m)
     ch.ag:Play(true)
   end
-  t.native, t.startedAt, t.convertedAt = ch, GetTime(), nil
+  t.native, t.startedAt = ch, GetTime()
   return true
 end
 
@@ -515,7 +512,7 @@ local function nativeToLua(t)
   local p
   t.value, t.velocity, p = nativeState(t)
   t.elapsed = p * t.duration
-  t.convertedAt = GetTime()
+  t.time = GetTime()
   t.native.ag:Stop()
   t.native = nil
 end
@@ -603,7 +600,7 @@ local function animate(m, targets, opts, owner)
       takeOver(m, name)
       if t.native then freezeNative(m, name, t) end
     else
-      t = { value = prop.read(m), velocity = 0 }
+      t = { value = prop.read(m), velocity = 0, time = GetTime() }
       m.tracks[name] = t
     end
     t.target = target
