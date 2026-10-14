@@ -32,6 +32,8 @@ local cases = {
   { "hover width jumps, height animates", false, { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):set({ width = 46 }):to({ height = 46 }, { duration = 0.2 })', 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ width = 40, height = 40 }, { duration = 0.2 })' } },
   { "hover leave width jumps", false, { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):set({ width = 40 / 1.15 }):to({ height = 40 / 1.15 }, { duration = 0.2 })' } },
   { "rows hold at half, then jump in", false, { 'Poly(row):set({ alpha = 0 }):to({ alpha = 1 }, { duration = 0.3, delay = (i - 1) * 0.05 })', 'Poly(row):set({ alpha = 0 }):to({ alpha = 0.5 }, { duration = 0, delay = (i - 1) * 0.05 }); Poly(row):to({ alpha = 1 }, { duration = 0, delay = 0.5 + (i - 1) * 0.05 })' } },
+  { "hover drifts sideways while growing", false, { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1.15, x = 30 }, { duration = 0.2, onComplete = function() Poly(self):to({ x = 0 }, { duration = 0.2 }) end })' } },
+  { "hover drifts sideways while shrinking", false, { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1, x = 30 }, { duration = 0.2, onComplete = function() Poly(self):to({ x = 0 }, { duration = 0.2 }) end })' } },
   { "first row starts half visible", false, { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 
