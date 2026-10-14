@@ -158,16 +158,17 @@ local function look(f)
   return { f.alpha, l, b, w, h }
 end
 -- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height.
-local ALL, SIZE, WIDTH = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }
+local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 3 }
 local function same(a, b, fields)
   for _, i in ipairs(fields or ALL) do if math.abs(a[i] - b[i]) > 0.01 then return false end end
   return true
 end
 
 -- Runs `action`, then samples what the frame draws at 240 fps for `seconds`.
--- Returns how many shown samples match neither the look before the action nor
--- the look at the end in `fields` (default: all): in-between frames of what
--- the brief asks to animate. Also returns the samples, for direction checks.
+-- Counts distinct in-between looks: shown, and matching neither the look
+-- before the action nor the look at the end. With `fields` (default: any change), every
+-- listed field must pass through in-between values on its own, and the count
+-- is the smallest of theirs. Also returns the samples, for direction checks.
 local function transition(f, action, seconds, fields)
   local before = look(f)
   action()
@@ -177,13 +178,25 @@ local function transition(f, action, seconds, fields)
     if f.shown then samples[#samples + 1] = look(f) end
   end
   local after = look(f)
-  local between = 0
-  for _, l in ipairs(samples) do
-    if not same(l, before, fields) and not same(l, after, fields) then between = between + 1 end
+  -- Distinct in-between looks: a frame that holds still, then jumps, gives one.
+  local function count(only)
+    local seen, n = {}, 0
+    for _, l in ipairs(samples) do
+      if not same(l, before, only) and not same(l, after, only) then
+        local key = {}
+        for _, i in ipairs(only) do key[#key + 1] = ("%.2f"):format(l[i]) end
+        key = table.concat(key, " ")
+        if not seen[key] then seen[key] = true; n = n + 1 end
+      end
+    end
+    return n
   end
-  return between, samples
+  if not fields then return count(ALL), samples end
+  local least = math.huge
+  for _, i in ipairs(fields) do least = math.min(least, count({ i })) end
+  return least, samples
 end
-local ANIMATED = 3 -- in-between samples, at least 12 ms of motion at 240 fps
+local ANIMATED = 3 -- distinct in-between looks: real motion, not a hold and a jump
 
 check("1 toggle animates open and closed, and survives fast clicks", function()
   local panel, button = newFrame(), newFrame()
@@ -206,12 +219,12 @@ check("2 toast slides in from above and leaves upward after 3 s", function()
   -- Direction is where the motion starts (coming in) or ends (leaving). A
   -- spring may overshoot past the anchor on the way.
   local function above(l) return l[3] + l[5] > top + 0.5 end
-  local n, samples = transition(toast, function() M.notify(toast) end, 1)
+  local n, samples = transition(toast, function() M.notify(toast) end, 1, VERTICAL)
   assert(n >= ANIMATED and above(samples[1]), "did not slide in from above")
   local _, b, _, h = toast:Rect()
   assert(toast.shown and near(b + h, top), "not in place after 1 s")
   run(1.9)
-  n, samples = transition(toast, function() end, 1.5)
+  n, samples = transition(toast, function() end, 1.5, VERTICAL)
   assert(n >= ANIMATED and above(samples[#samples]), "did not slide out upward")
   assert(not toast.shown, "still shown after 4.5 s")
 end)

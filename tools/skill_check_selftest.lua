@@ -27,6 +27,10 @@ local cases = {
   { "hover grows at once behind a fade", false, { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):set({ scale = 1.15, alpha = 0 }):to({ alpha = 1 }, { duration = 0.2 })' } },
   { "hover shrinks at once behind a fade", false, { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):set({ scale = 1, alpha = 0 }):to({ alpha = 1 }, { duration = 0.2 })' } },
   { "round 2 agent answer: rows start fading at once", true, { 'delay = (i - 1) * 0.05', 'delay = (i - 1) * 0.04' , 'duration = 0.3, delay', 'duration = 0.2, delay' } },
+  { "toast fades in still, then jumps into place", false, { 'Poly(toast):show("above", { spring = "stiff" })', 'Poly(toast):show("above", { spring = "stiff" }); Poly(toast):to({ y = 0 }, { duration = 0, delay = 0.1 })' } },
+  { "toast fades out still, then jumps up", false, { 'Poly(toast):hide("above")', 'Poly(toast):hide("above"); Poly(toast):to({ y = 16 }, { duration = 0, delay = 0.1 })' } },
+  { "hover width jumps, height animates", false, { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):set({ width = 46 }):to({ height = 46 }, { duration = 0.2 })', 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ width = 40, height = 40 }, { duration = 0.2 })' } },
+  { "hover leave width jumps", false, { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):set({ width = 40 / 1.15 }):to({ height = 40 / 1.15 }, { duration = 0.2 })' } },
   { "first row starts half visible", false, { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 
