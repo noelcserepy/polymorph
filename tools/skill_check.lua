@@ -152,8 +152,15 @@ end
 local function atRest(f) return near(f.alpha, 1) and near(f.s, 1) end
 
 local function between(v, a, b) return v > math.min(a, b) + 0.01 and v < math.max(a, b) - 0.01 end
--- True while a show or hide is visibly under way: alpha or scale off rest.
-local function animating(f) return between(f.alpha, 0, 1) or between(f.s, 0.5, 1) or between(f.s, 1, 1.5) end
+-- What a frame draws: alpha and its rectangle on screen.
+local function look(f)
+  local l, b, w, h = f:Rect()
+  return { f.alpha, l, b, w, h }
+end
+local function same(a, b)
+  for i = 1, 5 do if math.abs(a[i] - b[i]) > 0.01 then return false end end
+  return true
+end
 
 check("1 toggle animates open and closed, and survives fast clicks", function()
   local panel, button = newFrame(), newFrame()
@@ -161,11 +168,14 @@ check("1 toggle animates open and closed, and survives fast clicks", function()
   M.setupToggle(panel, button)
   local click = function() button.scripts.OnClick(button, "LeftButton") end
   click(); run(0.05)
-  assert(panel.shown and animating(panel), "did not animate open")
+  local opening = look(panel)
+  assert(panel.shown, "not shown after a click")
   run(1.5)
+  local open = look(panel)
   assert(panel.shown and atRest(panel), "not open at rest after one click")
+  assert(not same(opening, open), "did not animate open")
   click(); run(0.05)
-  assert(panel.shown and animating(panel), "did not animate closed")
+  assert(panel.shown and not same(look(panel), open), "did not animate closed")
   run(1.5)
   assert(not panel.shown, "still shown after the second click")
   click(); run(0.05); click(); run(0.05); click(); run(1.5)
@@ -216,21 +226,22 @@ check("4 hover button sits at TOPLEFT (10, -10) and grows around its center", fu
   assert(near(w, 40) and near(h, 40), "size " .. w .. "x" .. h)
   assert(near(l, pl + 10) and near(bottom + h, pb + ph - 10), "not at the parent's TOPLEFT (10, -10)")
   local cx, cy = l + w / 2, bottom + h / 2
+  local before = look(b)
   b.scripts.OnEnter(b); run(1)
   l, bottom, w, h = b:Rect()
   assert(near(w, 46) and near(h, 46), "drawn " .. w .. " wide on hover, want 46")
   assert(near(l + w / 2, cx) and near(bottom + h / 2, cy), "center moved while growing")
   b.scripts.OnLeave(b); run(1)
-  l, bottom, w = b:Rect()
-  assert(near(w, 40) and near(l + w / 2, cx), "did not shrink back")
+  assert(same(look(b), before), "not back to its first size and place after leave")
 end)
 
 check("5 secure panel animates out and hides, in and out of combat, with no blocked calls", function()
   local panel = newFrame("SecureHandlerStateTemplate")
+  local before = look(panel)
   combat = true
   M.closeSecurePanel(panel)
   run(0.05)
-  assert(between(panel.alpha, 0, 1), "did not animate in combat: alpha " .. panel.alpha)
+  assert(not same(look(panel), before), "did not animate in combat")
   run(1)
   assert(near(panel.alpha, 0), "not faded in combat: alpha " .. panel.alpha)
   combat = false
@@ -238,9 +249,10 @@ check("5 secure panel animates out and hides, in and out of combat, with no bloc
   run(0.1)
   assert(not panel.shown, "not hidden after combat")
   local other = newFrame("SecureHandlerStateTemplate")
+  before = look(other)
   M.closeSecurePanel(other)
   run(0.05)
-  assert(other.shown and animating(other), "did not animate out of combat")
+  assert(other.shown and not same(look(other), before), "did not animate out of combat")
   run(1)
   assert(not other.shown, "not hidden out of combat")
 end)
@@ -249,14 +261,15 @@ check("6 list fades in one after another", function()
   local rows = {}
   for i = 1, 5 do rows[i] = newFrame() end
   M.fadeListIn(rows)
-  local started = {}
+  local started, faded = {}, {}
   for step = 1, 240 * 2 do
     run(1 / 240, 240)
     for i, r in ipairs(rows) do
       if not started[i] and r.alpha > 0.02 then started[i] = step end
+      if between(r.alpha, 0.05, 0.95) then faded[i] = true end
     end
   end
-  for i = 1, 5 do assert(started[i], "row " .. i .. " never faded in") end
+  for i = 1, 5 do assert(started[i] and faded[i], "row " .. i .. " did not fade in") end
   for i = 2, 5 do
     assert(started[i] > started[i - 1], ("row %d started with or before row %d"):format(i, i - 1))
   end
