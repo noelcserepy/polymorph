@@ -92,6 +92,7 @@ local function pointIn(left, bottom, w, h, point)
   local y = point:find("TOP") and bottom + h or point:find("BOTTOM") and bottom or bottom + h / 2
   return x, y
 end
+function Region:EffectiveAlpha() return self.alpha * (self.parent and self.parent:EffectiveAlpha() or 1) end
 function Region:EffectiveScale() return self.s * (self.parent and self.parent:EffectiveScale() or 1) end
 function Region:Rect()
   if self == UIParent then return 0, 0, self.w, self.h end
@@ -175,7 +176,8 @@ local function transition(f, action, seconds, fields)
   local samples = {}
   for _ = 1, math.floor(seconds * 240) do
     run(1 / 240, 240)
-    if f:IsVisible() then samples[#samples + 1] = look(f) end
+    -- Only what the player can see counts: shown, and not fully transparent.
+    if f:IsVisible() and f:EffectiveAlpha() > 0.01 then samples[#samples + 1] = look(f) end
   end
   local after = look(f)
   -- Distinct in-between looks: a frame that holds still, then jumps, gives one.
@@ -191,12 +193,19 @@ local function transition(f, action, seconds, fields)
     end
     return n
   end
-  if not fields then return count(ALL), samples end
+  -- The biggest step between consecutive looks, from the look before the action.
+  local jump, last = 0, before
+  for _, l in ipairs(samples) do
+    for _, i in ipairs(fields or ALL) do jump = math.max(jump, math.abs(l[i] - last[i])) end
+    last = l
+  end
+  if not fields then return count(ALL), samples, jump end
   local least = math.huge
   for _, i in ipairs(fields) do least = math.min(least, count({ i })) end
-  return least, samples
+  return least, samples, jump
 end
 local ANIMATED = 3 -- distinct in-between looks: real motion, not a hold and a jump
+local SMOOTH = 8 -- the most a size may change between two samples 1/240 s apart
 
 check("1 toggle animates open and closed, and survives fast clicks", function()
   local panel, button = newFrame(), newFrame()
@@ -234,15 +243,17 @@ end)
 check("3 bar follows events smoothly", function()
   local bar = newFrame()
   bar:SetWidth(200)
-  assert(transition(bar, function() M.updateBar(bar, 0.5) end, 2, WIDTH) >= ANIMATED, "did not animate to 100")
+  -- Every event animates without a jump, including ones that arrive mid-animation.
+  local function event(fraction, seconds, label)
+    local n, _, jump = transition(bar, function() M.updateBar(bar, fraction) end, seconds, WIDTH)
+    assert(n >= ANIMATED, "did not animate " .. label .. ": width " .. bar.w)
+    assert(jump < SMOOTH, ("jumped %.1f %s"):format(jump, label))
+  end
+  event(0.5, 2, "to 100")
   assert(near(bar.w, 100, 0.1), "width " .. bar.w .. ", want 100")
-  -- Every event animates, including one that arrives mid-animation.
-  assert(transition(bar, function() M.updateBar(bar, 0.4) end, 0.05, WIDTH) >= ANIMATED and between(bar.w, 100, 80),
-    "did not animate toward 80: width " .. bar.w)
-  local before = bar.w
-  M.updateBar(bar, 0.8)
-  assert(bar.w == before, "jumped on a new event")
-  assert(transition(bar, function() end, 2, WIDTH) >= ANIMATED, "did not animate to 160")
+  event(0.4, 0.05, "toward 80")
+  assert(between(bar.w, 100, 80), "not moving toward 80: width " .. bar.w)
+  event(0.8, 2, "to 160 after an interruption")
   assert(near(bar.w, 160, 0.1), "width " .. bar.w .. ", want 160")
 end)
 
@@ -261,14 +272,14 @@ check("4 hover button sits at TOPLEFT (10, -10) and grows around its center", fu
     end
     return true
   end
-  local n, samples = transition(b, function() b.scripts.OnEnter(b) end, 1, SIZE)
-  assert(n >= ANIMATED, "did not animate growing")
+  local n, samples, jump = transition(b, function() b.scripts.OnEnter(b) end, 1, SIZE)
+  assert(n >= ANIMATED and jump < SMOOTH, "did not animate growing")
   assert(centered(samples), "center moved while growing")
   l, bottom, w, h = b:Rect()
   assert(near(w, 46) and near(h, 46), "drawn " .. w .. " wide on hover, want 46")
   assert(near(l + w / 2, cx) and near(bottom + h / 2, cy), "center moved while growing")
-  n, samples = transition(b, function() b.scripts.OnLeave(b) end, 1, SIZE)
-  assert(n >= ANIMATED, "did not animate shrinking")
+  n, samples, jump = transition(b, function() b.scripts.OnLeave(b) end, 1, SIZE)
+  assert(n >= ANIMATED and jump < SMOOTH, "did not animate shrinking")
   assert(centered(samples), "center moved while shrinking")
   assert(same(look(b), before), "not back to its first size and place after leave")
 end)

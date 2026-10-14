@@ -39,6 +39,9 @@ local cases = {
   { "hover drifts sideways while shrinking", false, { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1, x = 30 }, { duration = 0.2, onComplete = function() Poly(self):to({ x = 0 }, { duration = 0.2 }) end })' } },
   { "toast leaves a second early", false, { 'C_Timer.After(3,', 'C_Timer.After(2,' } },
   { "hover button never visible", false, { '  holder:SetSize(40, 40)\n', '  holder:SetSize(40, 40)\n  holder:Hide()\n' } },
+  { "bar jumps partway on the first event", false, { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.5 then Poly(bar):set({ width = 150 }) end Poly(bar):to({ width = 200 * fraction }) end' } },
+  { "bar jumps partway mid-animation", false, { 'function M.updateBar(bar, fraction) Poly(bar):to({ width = 200 * fraction }) end', 'function M.updateBar(bar, fraction) if fraction == 0.4 then Poly(bar):set({ width = 90 }) end Poly(bar):to({ width = 200 * fraction }) end' } },
+  { "hover button fully transparent", false, { '  b:SetSize(40, 40)\n', '  b:SetSize(40, 40)\n  b:SetAlpha(0)\n' } },
   { "first row starts half visible", false, { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 
