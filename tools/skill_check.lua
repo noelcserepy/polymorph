@@ -160,8 +160,9 @@ local function look(f)
   return { f:IsVisible() and f:EffectiveAlpha() or 0, l, b, w, h, b + h }
 end
 -- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height, 6 top.
--- The toast is anchored by its top, so its vertical position is the top edge.
-local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 6 }
+-- A slide moves the whole frame, so both its bottom and top edges must animate.
+-- Resizing moves only one of them.
+local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 3, 6 }
 local function same(a, b, fields)
   for _, i in ipairs(fields or ALL) do if math.abs(a[i] - b[i]) > 0.01 then return false end end
   return true
