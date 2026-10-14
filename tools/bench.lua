@@ -71,7 +71,17 @@ local scenarios = {
   { "spring: x, y slide (default)", { x = 40, y = -30 }, { x = 0, y = 0 }, {} },
   { "spring: width, height (default)", { width = 140, height = 90 }, { width = 100, height = 50 }, {} },
 }
-local ROUNDS = 15
+local ROUNDS = 31
+-- Short rounds, so no spring settles inside one at any frame rate down to 30 fps.
+local UPDATES = 8
+-- Every sample divides by every track, so a track that settled would skew it.
+local function assertMoving(frames, targets)
+  for _, f in ipairs(frames) do
+    for name in pairs(targets) do
+      assert(Poly(f):isMoving(name), "a track settled during a sample; shorten UPDATES")
+    end
+  end
+end
 print(("%-36s %9s %7s %13s"):format(("scenario (%s frames, %s fps)"):format(N, FPS), "Lua µs", "calls", "est. game µs"))
 for _, sc in ipairs(scenarios) do
   local frames = {}
@@ -84,7 +94,8 @@ for _, sc in ipairs(scenarios) do
     local targets = r % 2 == 1 and sc[2] or sc[3]
     for _, f in ipairs(frames) do Poly(f):to(targets, sc[4]) end
     instrument(frames, false)
-    samples[r] = measure(20, N * count)
+    samples[r] = measure(UPDATES, N * count)
+    assertMoving(frames, sc[2])
   end
   instrument(frames, true)
   table.sort(samples)
@@ -92,7 +103,8 @@ for _, sc in ipairs(scenarios) do
   -- Retarget once more, away from where the last round went, so every track moves while counted.
   local away = (ROUNDS + 1) % 2 == 1 and sc[2] or sc[3]
   for _, f in ipairs(frames) do Poly(f):to(away, sc[4]) end
-  local perTrack, priced = countCalls(20, N * count)
+  local perTrack, priced = countCalls(UPDATES, N * count)
+  assertMoving(frames, sc[2])
   print(("%-36s %9.3f %7.2f %13.2f"):format(sc[1], lua, perTrack, lua + priced))
   for _, f in ipairs(frames) do Poly(f):stop() end
   for _ = 1, 3 do if driverScript then driverScript(nil, DT) end end
