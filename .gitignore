@@ -1,0 +1,5 @@
+# Private dev tooling, notes and state. Never published.
+.dev/
+
+__pycache__/
+.DS_Store
