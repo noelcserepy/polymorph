@@ -430,19 +430,20 @@ local function takeVisibility(m)
   return m.visibilityToken
 end
 
--- awayKeys holds every property a hide() moved away from rest that no show()
--- or finished hide has returned yet. hide() adds to it, so stacked hides keep
--- all their properties. restingTargets() returns the set to rest and empties it.
+-- awayKeys holds every property that show() or hide() moved off rest and that
+-- has not arrived back yet. show() and hide() add to it. It empties only when a
+-- show() arrives at rest or a hide() finishes and resets the frame, so a hide
+-- that interrupts anything still resets every property that is off rest.
 local function markAway(m, targets)
   m.awayKeys = m.awayKeys or {}
   for name in pairs(targets) do m.awayKeys[name] = true end
 end
 
+-- Rest values for the `away` properties and everything still in awayKeys.
 local function restingTargets(m, away)
   local targets = {}
   for name in pairs(away) do targets[name] = m.rest[name] end
   for name in pairs(m.awayKeys or {}) do targets[name] = m.rest[name] end
-  m.awayKeys = nil
   return targets
 end
 
@@ -451,7 +452,8 @@ end
 -- returning every property that hide was moving.
 function Motion:show(away, opts)
   away = resolveAway(away)
-  takeVisibility(self)
+  opts = opts or {}
+  local token = takeVisibility(self)
   local frame = self.frame
   if not frame:IsShown() then
     if locked(self) then
@@ -461,7 +463,18 @@ function Motion:show(away, opts)
     self:set(away)
     frame:Show()
   end
-  return self:to(restingTargets(self, away), opts)
+  local targets = restingTargets(self, away)
+  markAway(self, targets)
+  local userDone = opts.onComplete
+  local copy = {}
+  for k, v in pairs(opts) do copy[k] = v end
+  -- Runs only if every property arrived. A later call that takes over one of
+  -- them leaves it in awayKeys for that call to finish.
+  copy.onComplete = function(frame)
+    if self.visibilityToken == token then self.awayKeys = nil end
+    if userDone then userDone(frame) end
+  end
+  return self:to(targets, copy)
 end
 
 -- Animates to `away`, then hides the frame and resets it to rest while hidden.
@@ -480,6 +493,7 @@ function Motion:hide(away, opts)
     end
     self.frame:Hide()
     self:set(restingTargets(self, away))
+    self.awayKeys = nil
     if userDone then userDone(self.frame) end
   end
   local copy = {}
