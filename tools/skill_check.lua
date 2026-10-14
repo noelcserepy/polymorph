@@ -157,16 +157,18 @@ local function look(f)
   local l, b, w, h = f:Rect()
   return { f.alpha, l, b, w, h }
 end
-local function same(a, b)
-  for i = 1, 5 do if math.abs(a[i] - b[i]) > 0.01 then return false end end
+-- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height.
+local ALL, SIZE, WIDTH = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }
+local function same(a, b, fields)
+  for _, i in ipairs(fields or ALL) do if math.abs(a[i] - b[i]) > 0.01 then return false end end
   return true
 end
 
 -- Runs `action`, then samples what the frame draws at 240 fps for `seconds`.
 -- Returns how many shown samples match neither the look before the action nor
--- the look at the end: in-between frames, the evidence of an animation. Also
--- returns the samples, for direction checks.
-local function transition(f, action, seconds)
+-- the look at the end in `fields` (default: all): in-between frames of what
+-- the brief asks to animate. Also returns the samples, for direction checks.
+local function transition(f, action, seconds, fields)
   local before = look(f)
   action()
   local samples = {}
@@ -177,7 +179,7 @@ local function transition(f, action, seconds)
   local after = look(f)
   local between = 0
   for _, l in ipairs(samples) do
-    if not same(l, before) and not same(l, after) then between = between + 1 end
+    if not same(l, before, fields) and not same(l, after, fields) then between = between + 1 end
   end
   return between, samples
 end
@@ -217,11 +219,13 @@ end)
 check("3 bar follows events smoothly", function()
   local bar = newFrame()
   bar:SetWidth(200)
-  assert(transition(bar, function() M.updateBar(bar, 0.5) end, 0.05) >= ANIMATED, "did not animate to 100")
+  assert(transition(bar, function() M.updateBar(bar, 0.5) end, 2, WIDTH) >= ANIMATED, "did not animate to 100")
+  assert(near(bar.w, 100, 0.1), "width " .. bar.w .. ", want 100")
+  M.updateBar(bar, 0.4); run(0.05)
   local before = bar.w
   M.updateBar(bar, 0.8)
   assert(bar.w == before, "jumped on a new event")
-  assert(transition(bar, function() end, 2) >= ANIMATED, "did not animate to 160")
+  assert(transition(bar, function() end, 2, WIDTH) >= ANIMATED, "did not animate to 160")
   assert(near(bar.w, 160, 0.1), "width " .. bar.w .. ", want 160")
 end)
 
@@ -234,11 +238,11 @@ check("4 hover button sits at TOPLEFT (10, -10) and grows around its center", fu
   assert(near(l, pl + 10) and near(bottom + h, pb + ph - 10), "not at the parent's TOPLEFT (10, -10)")
   local cx, cy = l + w / 2, bottom + h / 2
   local before = look(b)
-  assert(transition(b, function() b.scripts.OnEnter(b) end, 1) >= ANIMATED, "did not animate growing")
+  assert(transition(b, function() b.scripts.OnEnter(b) end, 1, SIZE) >= ANIMATED, "did not animate growing")
   l, bottom, w, h = b:Rect()
   assert(near(w, 46) and near(h, 46), "drawn " .. w .. " wide on hover, want 46")
   assert(near(l + w / 2, cx) and near(bottom + h / 2, cy), "center moved while growing")
-  assert(transition(b, function() b.scripts.OnLeave(b) end, 1) >= ANIMATED, "did not animate shrinking")
+  assert(transition(b, function() b.scripts.OnLeave(b) end, 1, SIZE) >= ANIMATED, "did not animate shrinking")
   assert(same(look(b), before), "not back to its first size and place after leave")
 end)
 
@@ -260,6 +264,7 @@ check("6 list fades in one after another", function()
   local rows = {}
   for i = 1, 5 do rows[i] = newFrame() end
   M.fadeListIn(rows)
+  for i, r in ipairs(rows) do assert(r.alpha < 0.05, "row " .. i .. " did not start invisible: alpha " .. r.alpha) end
   local started, faded = {}, {}
   for step = 1, 240 * 2 do
     run(1 / 240, 240)

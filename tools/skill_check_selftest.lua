@@ -23,6 +23,11 @@ local cases = {
   { "secure panel slides out of combat", true, { 'Poly(panel):hide("fade", { duration = 0.2 })', 'Poly(panel):hide(InCombatLockdown() and "fade" or { y = 16 })' } },
   { "rows 1 to 4 together", false, { 'delay = (i - 1) * 0.05', 'delay = i == 5 and 0.12 or 0' } },
   { "rows appear at once", false, { 'duration = 0.3, delay', 'duration = 0, delay' } },
+  { "bar first heads the wrong way", false, { 'Poly(bar):to({ width = 200 * fraction })', 'Poly(bar):to({ width = fraction == 0.5 and 300 or 200 * fraction })' } },
+  { "hover grows at once behind a fade", false, { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):set({ scale = 1.15, alpha = 0 }):to({ alpha = 1 }, { duration = 0.2 })' } },
+  { "hover shrinks at once behind a fade", false, { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):set({ scale = 1, alpha = 0 }):to({ alpha = 1 }, { duration = 0.2 })' } },
+  { "round 2 agent answer: rows start fading at once", true, { 'delay = (i - 1) * 0.05', 'delay = (i - 1) * 0.04' , 'duration = 0.3, delay', 'duration = 0.2, delay' } },
+  { "first row starts half visible", false, { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 
 local function plain(s) return (s:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")) end
