@@ -37,6 +37,8 @@ local cases = {
   { "rows fade while hidden", false, { 'for i, row in ipairs(rows) do', 'for i, row in ipairs(rows) do row:Hide()' } },
   { "hover drifts sideways while growing", false, { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1.15, x = 30 }, { duration = 0.2, onComplete = function() Poly(self):to({ x = 0 }, { duration = 0.2 }) end })' } },
   { "hover drifts sideways while shrinking", false, { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1, x = 30 }, { duration = 0.2, onComplete = function() Poly(self):to({ x = 0 }, { duration = 0.2 }) end })' } },
+  { "toast leaves a second early", false, { 'C_Timer.After(3,', 'C_Timer.After(2,' } },
+  { "hover button never visible", false, { '  holder:SetSize(40, 40)\n', '  holder:SetSize(40, 40)\n  holder:Hide()\n' } },
   { "first row starts half visible", false, { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 
