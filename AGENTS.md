@@ -6,7 +6,7 @@ If `.dev/AGENTS.md` exists, read it before anything else. It holds local, untrac
 
 ## Rules
 
-- WoW runs Lua 5.1. Write code that parses and runs there: no `goto`, no integer division `//`, no bitwise operators, and no `;` at the start of a block. In the game client, `string.format("%d")` errors above 2^31, so format large numbers with `%.0f`.
+- WoW runs Lua 5.1, and its `string.format("%d")` errors above 2^31. CI checks syntax on 5.1, and the tests fake the `%d` limit, so a slip fails the checks.
 - While a frame is locked (`InCombatLockdown()` and `frame:IsProtected()`), the library never calls `SetPoint`, `SetSize`, `SetWidth`, `SetHeight`, `SetScale`, `Show` or `Hide` on it. A new property declares `restricted = true` when its writer is blocked in combat. It declares `native = true` when it can draw through a native animation instead.
 - Every animation runs from the one driver `OnUpdate`. Add no per-animation timers or animation groups, because the game caps each addon at 500 timers and 2000 animation groups.
 - A change to the public API updates `docs/api.md` and `README.md` in the same change.

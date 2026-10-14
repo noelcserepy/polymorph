@@ -232,11 +232,11 @@ end
 -- adds tracks to a table the loop is traversing.
 local callbacks, callbackCount = {}, 0
 
-local function queueCallback(fn, frame, name)
+local function queueCallback(fn, frame, name, takenOver)
   callbackCount = callbackCount + 1
   local c = callbacks[callbackCount]
   if not c then c = {}; callbacks[callbackCount] = c end
-  c[1], c[2], c[3] = fn, frame, name
+  c[1], c[2], c[3], c[4] = fn, frame, name, takenOver
 end
 
 local function update(_, elapsed)
@@ -268,11 +268,14 @@ local function update(_, elapsed)
       active[m] = nil
     end
   end
-  for i = 1, callbackCount do
+  -- A callback can queue more callbacks. They run in this pass too.
+  local i = 1
+  while i <= callbackCount do
     local c = callbacks[i]
-    local fn, frame, name = c[1], c[2], c[3]
-    c[1], c[2], c[3] = nil, nil, nil
-    fn(frame, name)
+    local fn, frame, name, takenOver = c[1], c[2], c[3], c[4]
+    c[1], c[2], c[3], c[4] = nil, nil, nil, nil
+    fn(frame, name, takenOver)
+    i = i + 1
   end
   callbackCount = 0
   if next(active) == nil then driver:SetScript("OnUpdate", nil) end
@@ -321,19 +324,36 @@ local function release(m, name)
   if m.awayKeys then m.awayKeys[name] = nil end
 end
 
-local function animate(m, targets, opts, visibility)
+-- A property changes hands: to(), set() or stop() takes it, or a newer call
+-- animates it. The call that was moving it hears about it after the next update.
+local function takeOver(m, name)
+  local t = m.tracks[name]
+  if t and t.onDone then
+    queueCallback(t.onDone, m.frame, name, true)
+    t.onDone = nil
+    wake(m)
+  end
+end
+
+-- owner: "caller" for to(), "show" or "hide".
+local function animate(m, targets, opts, owner)
   opts = opts or {}
   local spring = not opts.duration and resolveSpring(opts.spring) or nil
   local ease = opts.duration and resolveEase(opts.ease) or nil
-  local pending = 0
-  local function arrived()
+  local pending, lost = 0, false
+  -- A hide() finishes once every property it still owns has arrived. Any other
+  -- call skips its onComplete once one of its properties is taken over.
+  local function settled(_, _, takenOver)
     pending = pending - 1
-    if pending == 0 and opts.onComplete then opts.onComplete(m.frame) end
+    if takenOver and owner ~= "hide" then lost = true end
+    if pending == 0 and not lost and opts.onComplete then opts.onComplete(m.frame) end
   end
   for name, target in pairs(targets) do
     local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 3)
     local t = m.tracks[name]
-    if not t then
+    if t then
+      takeOver(m, name)
+    else
       t = { value = prop.read(m), velocity = 0 }
       m.tracks[name] = t
     end
@@ -344,14 +364,14 @@ local function animate(m, targets, opts, visibility)
     if ease then
       t.ease, t.duration, t.elapsed, t.from = ease, opts.duration, 0, t.value
     end
-    if visibility then
+    if owner == "caller" then
+      release(m, name)
+    else
       m.awayKeys = m.awayKeys or {}
       m.awayKeys[name] = true
-    else
-      release(m, name)
     end
     pending = pending + 1
-    t.onDone = arrived
+    t.onDone = settled
   end
   if pending > 0 then wake(m) end
   return m
@@ -362,7 +382,7 @@ end
 --       duration (seconds) and ease = name, { x1, y1, x2, y2 } or function
 --       delay (seconds), onComplete(frame) when every property in this call has arrived
 function Motion:to(targets, opts)
-  return animate(self, targets, opts, false)
+  return animate(self, targets, opts, "caller")
 end
 
 -- Jumps to values immediately and stops those properties.
@@ -370,6 +390,7 @@ function Motion:set(values)
   self.isLocked = locked(self)
   for name, value in pairs(values) do
     local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 2)
+    takeOver(self, name)
     self.tracks[name] = nil
     release(self, name)
     if self.isLocked and waitsWhileLocked(prop) then
@@ -384,10 +405,14 @@ end
 -- Stops one property, or all of them, where they are.
 function Motion:stop(name)
   if name then
+    takeOver(self, name)
     self.tracks[name] = nil
     release(self, name)
   else
-    for n in pairs(self.tracks) do self.tracks[n] = nil end
+    for n in pairs(self.tracks) do
+      takeOver(self, n)
+      self.tracks[n] = nil
+    end
     self.awayKeys = nil
   end
   return self
@@ -476,7 +501,7 @@ function Motion:show(away, opts)
     self:set(away)
     frame:Show()
   end
-  return animate(self, restingTargets(self, away), opts, true)
+  return animate(self, restingTargets(self, away), opts, "show")
 end
 
 -- Animates to `away`, then hides the frame and resets it to rest while hidden.
@@ -511,7 +536,7 @@ function Motion:hide(away, opts)
     end
     if next(targets) == nil then finish() return self end
   end
-  return animate(self, targets, copy, true)
+  return animate(self, targets, copy, "hide")
 end
 
 setmetatable(Poly, { __call = function(_, frame) return motionFor(frame) end })

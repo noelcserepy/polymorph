@@ -32,7 +32,7 @@ local function fakeFrame(protected)
   function f:SetHeight(v) self.h = v end
   function f:GetScale() return self.s end
   function f:SetScale(v) self.s = v end
-  function f:GetPoint() return unpack(self.point) end
+  function f:GetPoint() return unpack(self.point, 1, 5) end
   function f:SetPoint(a, b, c, x, y)
     assert(not (combat and protected), "SetPoint while locked")
     self.point = { a, b, c, x, y }
@@ -71,6 +71,24 @@ local function fakeFrame(protected)
   return f
 end
 unpack = unpack or table.unpack
+
+-- WoW's string.format stores %d and %i in a 32-bit int and errors outside that
+-- range. Reference Lua uses 64 bits, so fake the game's limit.
+local realFormat = string.format
+string.format = function(fmt, ...)
+  local i = 0
+  for spec in fmt:gmatch("%%[-+ #0-9.]*([%a%%])") do
+    if spec ~= "%" then
+      i = i + 1
+      local v = select(i, ...)
+      if (spec == "d" or spec == "i") and type(v) == "number" and (v >= 2 ^ 31 or v < -2 ^ 31) then
+        error("integer overflow attempting to store " .. realFormat("%.0f", v), 2)
+      end
+    end
+  end
+  return realFormat(fmt, ...)
+end
+assert(not pcall(string.format, "%d", 2 ^ 31) and pcall(string.format, "%d", 2 ^ 31 - 1), "%d fake")
 
 local ns = { dev = true }
 assert(loadfile(path))("Polymorph", ns)
@@ -362,6 +380,111 @@ test("stop() releases a property that already arrived away from rest", function(
   combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(not f.shown and m:get("y") == -16, "hide reset a stopped y: " .. m:get("y"))
+end)
+
+-- Random sequences of show, hide, to, set, stop and combat on one frame. A model
+-- tracks who owns each property: show() and hide() own what they animate, and
+-- to(), set() or stop() hand a property to the caller. Once everything settles,
+-- the frame is shown if the last visibility call was show(), properties show()
+-- and hide() own are at rest, and the caller's properties hold the caller's value.
+test("random show/hide sequences end where the last calls say", function()
+  local REST = { alpha = 1, scale = 1, x = 0, y = 0, width = 100 }
+  local RANGE = { alpha = { 0, 1 }, scale = { 0.5, 1.5 }, x = { -30, 30 }, y = { -30, 30 }, width = { 50, 150 } }
+  local NAMES = { "alpha", "scale", "x", "y", "width" }
+  local PRESETS = { "fade", "pop", "below", "above", "left", "right" }
+  local state = 1
+  local function rand(n) -- Park-Miller, so 5.1 and 5.4 draw the same sequences
+    state = state * 16807 % 2147483647
+    return n and state % n + 1 or state / 2147483647
+  end
+  local function value(name) local r = RANGE[name]; return r[1] + (r[2] - r[1]) * rand() end
+  local function opts()
+    if rand(2) == 1 then return { duration = 0.05 + 0.4 * rand() } end
+    return { spring = rand(2) == 1 and "stiff" or "gentle" }
+  end
+
+  for seed = 1, 300 do
+    state = seed
+    local protected = rand(2) == 1
+    local f = fakeFrame(protected)
+    local m = Poly(f)
+    local owner = {} -- name -> "vis", or { value } once the caller owns it
+    local lastVis, deferredShow
+    local log = {}
+    local function locked() return combat and protected end
+    local function visTakes(away)
+      for name in pairs(away) do owner[name] = "vis" end
+    end
+    local function show(away)
+      -- show() also returns what show()/hide() still own, which the model already has as "vis".
+      visTakes(Poly.presets[away])
+    end
+    for _ = 1, 14 do
+      local op = rand(8)
+      if op == 1 then
+        local away = PRESETS[rand(#PRESETS)]
+        log[#log + 1] = "show " .. away
+        lastVis = "show"
+        deferredShow = (not f.shown and locked()) and away or nil
+        if not deferredShow then show(away) end
+        m:show(away, opts())
+      elseif op == 2 then
+        local away = PRESETS[rand(#PRESETS)]
+        log[#log + 1] = "hide " .. away
+        lastVis, deferredShow = "hide", nil
+        local animated = {}
+        for name, v in pairs(Poly.presets[away]) do
+          if not (locked() and (name == "scale" or name == "width")) then animated[name] = v end
+        end
+        visTakes(animated)
+        m:hide(away, opts())
+      elseif op <= 4 then
+        local name = NAMES[rand(#NAMES)]
+        local v = value(name)
+        log[#log + 1] = ("%s %s %.2f"):format(op == 3 and "to" or "set", name, v)
+        owner[name] = { v }
+        if op == 3 then m:to({ [name] = v }, opts()) else m:set({ [name] = v }) end
+      elseif op == 5 then
+        local name = rand(3) == 1 and NAMES[rand(#NAMES)] or nil
+        log[#log + 1] = "stop " .. tostring(name)
+        m:stop(name)
+        for _, n in ipairs(NAMES) do
+          if n == name or not name then owner[n] = { (m:get(n)) } end
+        end
+      elseif op == 6 then
+        log[#log + 1] = combat and "combat ends" or "combat starts"
+        combat = not combat
+        if not combat then
+          if deferredShow then show(deferredShow); deferredShow = nil end
+          fire("PLAYER_REGEN_ENABLED")
+        end
+      else
+        local t = 0.4 * rand()
+        log[#log + 1] = ("run %.2f"):format(t)
+        run(t)
+      end
+    end
+    if combat then
+      combat = false
+      if deferredShow then show(deferredShow) end
+      fire("PLAYER_REGEN_ENABLED")
+    end
+    run(6)
+
+    local function fail(what)
+      error(("seed %d: %s\n  %s"):format(seed, what, table.concat(log, "\n  ")), 0)
+    end
+    if f.shown ~= (lastVis ~= "hide") then fail("shown is " .. tostring(f.shown) .. " after a last " .. tostring(lastVis)) end
+    if m:isMoving() then fail("still moving") end
+    for _, name in ipairs(NAMES) do
+      local o = owner[name]
+      local want = type(o) == "table" and o[1] or REST[name]
+      local got = m:get(name)
+      if math.abs(got - want) > 0.01 then
+        fail(("%s is %.3f, want %.3f (%s)"):format(name, got, want, type(o) == "table" and "caller's" or "rest"))
+      end
+    end
+  end
 end)
 
 print(("CORE OK: %d tests"):format(passed))
