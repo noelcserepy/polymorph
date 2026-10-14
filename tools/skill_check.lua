@@ -191,10 +191,17 @@ local function transition(f, action, seconds, fields)
   local samples = {}
   -- Only what the player can see counts: shown, and not fully transparent.
   -- The first sample is right after the call, before the driver runs.
-  local hidden = 0 -- frames the player could not see after the first one they could
+  -- hidden: frames the player could not see after the first one they could.
+  -- back: whether it came back into view after such a frame.
+  local hidden, back = 0, false
   local function sample()
     local l = look(f)
-    if l[1] > 0.01 then samples[#samples + 1] = l elseif samples[1] then hidden = hidden + 1 end
+    if l[1] > 0.01 then
+      if hidden > 0 then back = true end
+      samples[#samples + 1] = l
+    elseif samples[1] then
+      hidden = hidden + 1
+    end
   end
   sample()
   for _ = 1, math.floor(seconds * 240) do
@@ -216,11 +223,11 @@ local function transition(f, action, seconds, fields)
   if not fields then
     local most = 0
     for _, i in ipairs(ALL) do most = math.max(most, count(i)) end
-    return most, samples, jump, hidden
+    return most, samples, jump, hidden, back
   end
   local least = math.huge
   for _, i in ipairs(fields) do least = math.min(least, count(i)) end
-  return least, samples, jump, hidden
+  return least, samples, jump, hidden, back
 end
 local ANIMATED = 3 -- distinct in-between looks: real motion, not a hold and a jump
 local SMOOTH = 8 -- the most a size may change between two samples 1/240 s apart
@@ -230,9 +237,14 @@ check("1 toggle animates open and closed, and survives fast clicks", function()
   panel:Hide()
   M.setupToggle(panel, button)
   local click = function() button.scripts.OnClick(button, "LeftButton") end
-  assert(transition(panel, click, 1.5) >= ANIMATED, "did not animate open")
+  local n, _, _, hidden = transition(panel, click, 1.5)
+  assert(hidden == 0, "disappeared while opening")
+  assert(n >= ANIMATED, "did not animate open")
   assert(panel.shown and atRest(panel), "not open at rest after one click")
-  assert(transition(panel, click, 1.5) >= ANIMATED, "did not animate closed")
+  local back
+  n, _, _, _, back = transition(panel, click, 1.5)
+  assert(not back, "came back while closing")
+  assert(n >= ANIMATED, "did not animate closed")
   assert(not panel.shown, "still shown after the second click")
   click(); run(0.05); click(); run(0.05); click(); run(1.5)
   assert(panel.shown and atRest(panel), "three fast clicks did not end open at rest")
@@ -304,7 +316,8 @@ check("3 bar follows events smoothly", function()
   bar:SetWidth(200)
   -- Every event animates without a jump, including ones that arrive mid-animation.
   local function event(fraction, seconds, label)
-    local n, _, jump = transition(bar, function() M.updateBar(bar, fraction) end, seconds, WIDTH)
+    local n, _, jump, hidden = transition(bar, function() M.updateBar(bar, fraction) end, seconds, WIDTH)
+    assert(hidden == 0, "disappeared " .. label)
     assert(n >= ANIMATED, "did not animate " .. label .. ": width " .. bar.w)
     assert(jump < SMOOTH, ("jumped %.1f %s"):format(jump, label))
   end
@@ -351,14 +364,18 @@ end)
 check("5 secure panel animates out and hides, in and out of combat, with no blocked calls", function()
   local panel = newFrame("SecureHandlerStateTemplate")
   combat = true
-  assert(transition(panel, function() M.closeSecurePanel(panel) end, 1) >= ANIMATED, "did not animate in combat")
-  assert(near(panel.alpha, 0), "not faded in combat: alpha " .. panel.alpha)
+  local n, _, _, _, back = transition(panel, function() M.closeSecurePanel(panel) end, 1)
+  assert(not back, "came back while closing in combat")
+  assert(n >= ANIMATED, "did not animate in combat")
+  assert(look(panel)[1] < 0.01, "not faded in combat: alpha " .. look(panel)[1])
   combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(0.1)
   assert(not panel.shown, "not hidden after combat")
   local other = newFrame("SecureHandlerStateTemplate")
-  assert(transition(other, function() M.closeSecurePanel(other) end, 1) >= ANIMATED, "did not animate out of combat")
+  n, _, _, _, back = transition(other, function() M.closeSecurePanel(other) end, 1)
+  assert(not back, "came back while closing out of combat")
+  assert(n >= ANIMATED, "did not animate out of combat")
   assert(not other.shown, "not hidden out of combat")
 end)
 
@@ -377,7 +394,11 @@ check("6 list fades in one after another", function()
       if not started[i] and alpha > 0.02 then started[i] = step end
       -- A row's fade runs from its start until it first reaches full alpha.
       local a = alphas[i]
-      if started[i] and not (a[#a] and a[#a] >= 0.99) then a[#a + 1] = alpha end
+      if started[i] and not (a[#a] and a[#a] >= 0.99) then
+        -- Rows only fade in: no dip below what they already showed.
+        if a[#a] then assert(alpha > a[#a] - 0.05, "row " .. i .. " dimmed while fading in") end
+        a[#a + 1] = alpha
+      end
     end
   end
   for i = 1, 5 do
