@@ -171,6 +171,20 @@ end
 -- of each field's travel. With `fields`, every listed field must move through
 -- its middle on its own, and the count is the smallest of theirs. Without, the
 -- count is the largest. Also returns the samples, and the biggest step.
+-- Distinct values in the middle of a travel: between 20% and 80% of the way
+-- from the first value to the last. A jump never lands there, and a wobble or
+-- a few steps near one end stay out of it.
+local function middle(values)
+  local a, b = values[1], values[#values]
+  if not a or math.abs(b - a) < 0.01 then return 0 end
+  local seen, n = {}, 0
+  for _, v in ipairs(values) do
+    local k, key = (v - a) / (b - a), ("%.2f"):format(v)
+    if k >= 0.2 and k <= 0.8 and not seen[key] then seen[key] = true; n = n + 1 end
+  end
+  return n
+end
+
 local function transition(f, action, seconds, fields)
   local before = look(f)
   action()
@@ -183,21 +197,10 @@ local function transition(f, action, seconds, fields)
     run(1 / 240, 240)
     sample()
   end
-  -- Distinct values in the middle of the travel: between 20% and 80% of the
-  -- way from the first value seen to the last. A jump never lands there, and
-  -- a small wobble stays near the ends.
   local function count(i)
-    local first, last = samples[1], samples[#samples]
-    if not first then return 0 end
-    local a, b = first[i], last[i]
-    if math.abs(b - a) < 0.01 then return 0 end
-    local seen, n = {}, 0
-    for _, l in ipairs(samples) do
-      local k = (l[i] - a) / (b - a)
-      local key = ("%.2f"):format(l[i])
-      if k >= 0.2 and k <= 0.8 and not seen[key] then seen[key] = true; n = n + 1 end
-    end
-    return n
+    local values = {}
+    for n, l in ipairs(samples) do values[n] = l[i] end
+    return middle(values)
   end
   -- The biggest step between consecutive looks, from the look before the action.
   local jump, last = 0, before
@@ -236,40 +239,52 @@ check("2 toast slides in from above and leaves upward after 3 s", function()
   toast:SetPoint("TOP", UIParent, "TOP", 0, -120)
   local _, b0, w0, h0 = toast:Rect()
   local top = b0 + h0
-  -- A slide moves the toast without changing its size. Holding the size makes
-  -- its top edge an honest measure of the slide: resizing or scaling would
-  -- move edges without sliding.
-  local function keepsSize(samples)
-    for _, l in ipairs(samples) do
-      if not (near(l[4], w0, 0.05) and near(l[5], h0, 0.05)) then return false end
-    end
-    return true
-  end
-  -- Direction is where the motion starts (coming in) or ends (leaving). A
-  -- spring may overshoot past the anchor on the way.
-  local function above(l) return l[6] > top + 0.5 end
-  local n, samples = transition(toast, function() M.notify(toast) end, 1, VERTICAL)
-  assert(keepsSize(samples), "changed size while shown")
-  assert(n >= ANIMATED and above(samples[1]), "did not slide in from above")
-  assert(toast.shown and near(look(toast)[6], top), "not in place after 1 s")
-  -- Until 3 s the toast stays put: fully visible, at its anchor, at its size.
-  for _ = 1, math.floor(1.85 * 240) do
+  -- One look per frame from the call to 4.5 s, checked against the toast's
+  -- whole timeline. A slide moves the toast without changing its size, which
+  -- makes its top edge an honest measure of the slide.
+  M.notify(toast)
+  local frames, t = {}, {}
+  for n = 1, math.floor(4.5 * 240) do
     run(1 / 240, 240)
-    local l = look(toast)
-    assert(near(l[1], 1) and near(l[6], top) and keepsSize({ l }), "moved or hid before 3 s")
+    frames[n], t[n] = look(toast), n / 240
   end
-  local still = look(toast)
-  n, samples = transition(toast, function() end, 1.5, VERTICAL)
-  assert(keepsSize(samples), "changed size while shown")
-  -- Sliding out starts by 3.3 s: the toast moves within 0.45 s of these samples,
-  -- at 240 per second.
-  local moved
-  for i, l in ipairs(samples) do
-    if math.abs(l[6] - still[6]) > 2 then moved = i; break end
+  local entry, exit = {}, {}
+  local shownAt, leftAt, hiddenAt, highest
+  for n, l in ipairs(frames) do
+    local seen = l[1] > 0.01
+    if seen then
+      assert(near(l[4], w0, 0.05) and near(l[5], h0, 0.05), "changed size while shown")
+    end
+    if t[n] < 3 then
+      if seen and not shownAt then shownAt = n end
+      assert(not shownAt or seen, "hid before 3 s")
+      if t[n] < 1 then
+        if seen then entry[#entry + 1] = l[6] end
+      else
+        assert(near(l[1], 1) and near(l[6], top), "moved or hid before 3 s")
+      end
+    else
+      if not leftAt and math.abs(l[6] - top) > 2 then
+        leftAt = t[n]
+        assert(l[6] > top, "did not slide out upward")
+      end
+      if hiddenAt then assert(not seen, "came back after leaving") end
+      if leftAt and not hiddenAt then
+        if seen then
+          highest = math.max(highest or l[6], l[6])
+          assert(l[6] > highest - 2, "came back down while leaving")
+          exit[#exit + 1] = l[6]
+        else
+          hiddenAt = t[n]
+        end
+      end
+    end
   end
-  assert(moved and moved <= 0.45 * 240, "did not start leaving by 3.3 s")
-  assert(n >= ANIMATED and above(samples[#samples]), "did not slide out upward")
-  assert(not toast.shown, "still shown after 4.5 s")
+  assert(shownAt and entry[1] and entry[1] > top + 0.5 and middle(entry) >= ANIMATED, "did not slide in from above")
+  assert(leftAt and leftAt <= 3.3, "did not start leaving by 3.3 s")
+  table.insert(exit, 1, top)
+  assert(exit[#exit] > top + 0.5 and middle(exit) >= ANIMATED, "did not slide out upward")
+  assert(hiddenAt, "still shown after 4.5 s")
 end)
 
 check("3 bar follows events smoothly", function()
@@ -342,20 +357,21 @@ check("6 list fades in one after another", function()
   for i, r in ipairs(rows) do
     assert(r:EffectiveAlpha() < 0.05, "row " .. i .. " did not start invisible: alpha " .. r:EffectiveAlpha())
   end
-  local started, faded = {}, {}
+  local started, alphas = {}, { {}, {}, {}, {}, {} }
   for step = 1, 240 * 2 do
     run(1 / 240, 240)
     for i, r in ipairs(rows) do
       local alpha = look(r)[1]
       if not started[i] and alpha > 0.02 then started[i] = step end
-      if alpha > 0.05 and alpha < 0.95 then
-        faded[i] = faded[i] or {}
-        faded[i][("%.2f"):format(alpha)] = true
-      end
+      -- A row's fade runs from its start until it first reaches full alpha.
+      local a = alphas[i]
+      if started[i] and not (a[#a] and a[#a] >= 0.99) then a[#a + 1] = alpha end
     end
   end
-  local function distinct(set) local n = 0; for _ in pairs(set or {}) do n = n + 1 end; return n end
-  for i = 1, 5 do assert(started[i] and distinct(faded[i]) >= ANIMATED, "row " .. i .. " did not fade in") end
+  for i = 1, 5 do
+    table.insert(alphas[i], 1, 0) -- each fade starts from invisible
+    assert(started[i] and middle(alphas[i]) >= ANIMATED, "row " .. i .. " did not fade in")
+  end
   for i = 2, 5 do
     assert(started[i] > started[i - 1], ("row %d started with or before row %d"):format(i, i - 1))
   end
