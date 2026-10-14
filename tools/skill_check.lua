@@ -191,7 +191,11 @@ local function transition(f, action, seconds, fields)
   local samples = {}
   -- Only what the player can see counts: shown, and not fully transparent.
   -- The first sample is right after the call, before the driver runs.
-  local function sample() local l = look(f); if l[1] > 0.01 then samples[#samples + 1] = l end end
+  local hidden = 0 -- frames the player could not see after the first one they could
+  local function sample()
+    local l = look(f)
+    if l[1] > 0.01 then samples[#samples + 1] = l elseif samples[1] then hidden = hidden + 1 end
+  end
   sample()
   for _ = 1, math.floor(seconds * 240) do
     run(1 / 240, 240)
@@ -212,11 +216,11 @@ local function transition(f, action, seconds, fields)
   if not fields then
     local most = 0
     for _, i in ipairs(ALL) do most = math.max(most, count(i)) end
-    return most, samples, jump
+    return most, samples, jump, hidden
   end
   local least = math.huge
   for _, i in ipairs(fields) do least = math.min(least, count(i)) end
-  return least, samples, jump
+  return least, samples, jump, hidden
 end
 local ANIMATED = 3 -- distinct in-between looks: real motion, not a hold and a jump
 local SMOOTH = 8 -- the most a size may change between two samples 1/240 s apart
@@ -249,17 +253,25 @@ check("2 toast slides in from above and leaves upward after 3 s", function()
     frames[n], t[n] = look(toast), n / 240
   end
   local entry, exit = {}, {}
-  local shownAt, leftAt, hiddenAt, highest
+  local shownAt, leftAt, hiddenAt, highest, lowest
   for n, l in ipairs(frames) do
     local seen = l[1] > 0.01
     if seen then
       assert(near(l[4], w0, 0.05) and near(l[5], h0, 0.05), "changed size while shown")
     end
     if t[n] < 3 then
-      if seen and not shownAt then shownAt = n end
+      if seen and not shownAt then
+        shownAt = n
+        assert(l[6] > top + 0.5, "did not slide in from above")
+      end
       assert(not shownAt or seen, "hid before 3 s")
       if t[n] < 1 then
-        if seen then entry[#entry + 1] = l[6] end
+        if seen then
+          -- Coming in, the toast only comes down. A spring may overshoot a little.
+          lowest = math.min(lowest or l[6], l[6])
+          assert(l[6] < lowest + 2, "went back up while coming in")
+          entry[#entry + 1] = l[6]
+        end
       else
         assert(near(l[1], 1) and near(l[6], top), "moved or hid before 3 s")
       end
@@ -320,19 +332,19 @@ check("4 hover button sits at TOPLEFT (10, -10) and grows around its center", fu
     end
     return true
   end
-  local n, samples, jump = transition(b, function() b.scripts.OnEnter(b) end, 1, SIZE)
+  local n, samples, jump, hidden = transition(b, function() b.scripts.OnEnter(b) end, 1, SIZE)
+  assert(hidden == 0, "disappeared while growing")
   assert(n >= ANIMATED, "did not animate growing")
   assert(jump < SMOOTH, ("jumped %.1f while growing"):format(jump))
   assert(centered(samples), "center moved while growing")
   l, bottom, w, h = b:Rect()
   assert(near(w, 46) and near(h, 46), "drawn " .. w .. " wide on hover, want 46")
-  assert(look(b)[1] > 0.05, "button not visible after growing")
   assert(near(l + w / 2, cx) and near(bottom + h / 2, cy), "center moved while growing")
-  n, samples, jump = transition(b, function() b.scripts.OnLeave(b) end, 1, SIZE)
+  n, samples, jump, hidden = transition(b, function() b.scripts.OnLeave(b) end, 1, SIZE)
+  assert(hidden == 0, "disappeared while shrinking")
   assert(n >= ANIMATED, "did not animate shrinking")
   assert(jump < SMOOTH, ("jumped %.1f while shrinking"):format(jump))
   assert(centered(samples), "center moved while shrinking")
-  assert(look(b)[1] > 0.05, "button not visible after shrinking")
   assert(same(look(b), before), "not back to its first size and place after leave")
 end)
 
