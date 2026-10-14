@@ -49,6 +49,7 @@ local cases = {
   { "hover button starts hidden", "button not visible after creation", { '  b:SetSize(40, 40)\n', '  b:SetSize(40, 40)\n  b:Hide()\n', 'b:SetScript("OnEnter", function(self) Poly(self)', 'b:SetScript("OnEnter", function(self) self:Show(); Poly(self)' } },
   { "hover button vanishes after growing", "button not visible after growing", { 'Poly(self):to({ scale = 1.15 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1.15 }, { spring = "stiff", onComplete = function(f) f:Hide() end })', 'b:SetScript("OnLeave", function(self) Poly(self)', 'b:SetScript("OnLeave", function(self) self:Show(); Poly(self)' } },
   { "hover button vanishes after shrinking", "button not visible after shrinking", { 'Poly(self):to({ scale = 1 }, { spring = "stiff" })', 'Poly(self):to({ scale = 1 }, { spring = "stiff", onComplete = function(f) f:Hide() end })' } },
+  { "toast leaves 0.5 s late", "did not start leaving by 3.3 s", { 'C_Timer.After(3,', 'C_Timer.After(3.5,' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 

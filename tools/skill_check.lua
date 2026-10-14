@@ -236,7 +236,14 @@ check("2 toast slides in from above and leaves upward after 3 s", function()
   run(1.85)
   _, b, _, h = toast:Rect()
   assert(toast:IsVisible() and near(toast.alpha, 1) and near(b + h, top), "started leaving before 3 s")
+  local still = look(toast)
   n, samples = transition(toast, function() end, 1.5, VERTICAL)
+  -- Leaving starts by 3.3 s: within 0.45 s of these samples, at 240 per second.
+  local moved
+  for i, l in ipairs(samples) do
+    if not same(l, still) then moved = i; break end
+  end
+  assert(moved and moved <= 0.45 * 240, "did not start leaving by 3.3 s")
   assert(n >= ANIMATED and above(samples[#samples]), "did not slide out upward")
   assert(not toast.shown, "still shown after 4.5 s")
 end)
