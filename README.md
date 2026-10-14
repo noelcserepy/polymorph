@@ -75,7 +75,7 @@ Poly(f):show("pop")      -- from alpha 0 and scale 0.92 to rest
 Poly(f):hide("below")    -- slide down and fade, then Hide()
 ```
 
-Presets name where the frame is while it's away: `fade`, `pop`, `below`, `above`, `left`, `right`. You can also pass a table such as `{ alpha = 0, x = 120 }`. When a hide finishes, every property that `show()` or `hide()` moved is back at rest, so a plain `Show()` later looks normal. Calling `show()` during a `hide()` turns the frame around, and `Hide()` is never called.
+Presets name where the frame is while it's away: `fade`, `pop`, `below`, `above`, `left`, `right`. You can also pass a table such as `{ alpha = 0, x = 120 }`. When a hide finishes, every property that `show()` or `hide()` still owns is back at rest, so a plain `Show()` later looks normal. A property you take over with `to()`, `set()` or `stop()` stays the way you left it. Calling `show()` during a `hide()` turns the frame around, and `Hide()` is never called.
 
 ## Combat
 

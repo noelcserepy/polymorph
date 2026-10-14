@@ -259,6 +259,7 @@ local function update(_, elapsed)
         prop.write(m, t.value)
         if rest then
           m.tracks[name] = nil
+          if t.visibility and m.awayKeys and t.target == m.rest[name] then m.awayKeys[name] = nil end
           if t.onDone then queueCallback(t.onDone, m.frame, name) end
         end
       end
@@ -312,25 +313,29 @@ local function motionFor(frame)
   return m
 end
 
--- Animates each property in `targets` toward its value.
--- opts: spring = preset name or { stiffness, damping, mass }
---       duration (seconds) and ease = name, { x1, y1, x2, y2 } or function
---       delay (seconds), onComplete(frame) when every property in this call has arrived
-function Motion:to(targets, opts)
+-- awayKeys records ownership: a property is in it while show() or hide() owns
+-- it off rest. It joins when show() or hide() animates it. It leaves when its
+-- track arrives at rest, or when the caller takes it over with to(), set() or
+-- stop(). A finished hide() resets whatever is still in it.
+local function release(m, name)
+  if m.awayKeys then m.awayKeys[name] = nil end
+end
+
+local function animate(m, targets, opts, visibility)
   opts = opts or {}
   local spring = not opts.duration and resolveSpring(opts.spring) or nil
   local ease = opts.duration and resolveEase(opts.ease) or nil
   local pending = 0
   local function arrived()
     pending = pending - 1
-    if pending == 0 and opts.onComplete then opts.onComplete(self.frame) end
+    if pending == 0 and opts.onComplete then opts.onComplete(m.frame) end
   end
   for name, target in pairs(targets) do
-    local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 2)
-    local t = self.tracks[name]
+    local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 3)
+    local t = m.tracks[name]
     if not t then
-      t = { value = prop.read(self), velocity = 0 }
-      self.tracks[name] = t
+      t = { value = prop.read(m), velocity = 0 }
+      m.tracks[name] = t
     end
     t.target = target
     t.precision = prop.precision
@@ -339,11 +344,26 @@ function Motion:to(targets, opts)
     if ease then
       t.ease, t.duration, t.elapsed, t.from = ease, opts.duration, 0, t.value
     end
+    t.visibility = visibility
+    if visibility then
+      m.awayKeys = m.awayKeys or {}
+      m.awayKeys[name] = true
+    else
+      release(m, name)
+    end
     pending = pending + 1
     t.onDone = arrived
   end
-  if pending > 0 then wake(self) end
-  return self
+  if pending > 0 then wake(m) end
+  return m
+end
+
+-- Animates each property in `targets` toward its value.
+-- opts: spring = preset name or { stiffness, damping, mass }
+--       duration (seconds) and ease = name, { x1, y1, x2, y2 } or function
+--       delay (seconds), onComplete(frame) when every property in this call has arrived
+function Motion:to(targets, opts)
+  return animate(self, targets, opts, false)
 end
 
 -- Jumps to values immediately and stops those properties.
@@ -351,8 +371,8 @@ function Motion:set(values)
   self.isLocked = locked(self)
   for name, value in pairs(values) do
     local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 2)
-    local t = self.tracks[name]
     self.tracks[name] = nil
+    release(self, name)
     if self.isLocked and waitsWhileLocked(prop) then
       self:to({ [name] = value }, { duration = 0 }) -- applied when combat ends
     else
@@ -365,7 +385,10 @@ end
 -- Stops one property, or all of them, where they are.
 function Motion:stop(name)
   for n in pairs(self.tracks) do
-    if name == nil or n == name then self.tracks[n] = nil end
+    if name == nil or n == name then
+      self.tracks[n] = nil
+      release(self, n)
+    end
   end
   return self
 end
@@ -430,15 +453,6 @@ local function takeVisibility(m)
   return m.visibilityToken
 end
 
--- awayKeys holds every property that show() or hide() moved off rest and that
--- has not arrived back yet. show() and hide() add to it. It empties only when a
--- show() arrives at rest or a hide() finishes and resets the frame, so a hide
--- that interrupts anything still resets every property that is off rest.
-local function markAway(m, targets)
-  m.awayKeys = m.awayKeys or {}
-  for name in pairs(targets) do m.awayKeys[name] = true end
-end
-
 -- Rest values for the `away` properties and everything still in awayKeys.
 local function restingTargets(m, away)
   local targets = {}
@@ -452,8 +466,7 @@ end
 -- returning every property that hide was moving.
 function Motion:show(away, opts)
   away = resolveAway(away)
-  opts = opts or {}
-  local token = takeVisibility(self)
+  takeVisibility(self)
   local frame = self.frame
   if not frame:IsShown() then
     if locked(self) then
@@ -463,18 +476,7 @@ function Motion:show(away, opts)
     self:set(away)
     frame:Show()
   end
-  local targets = restingTargets(self, away)
-  markAway(self, targets)
-  local userDone = opts.onComplete
-  local copy = {}
-  for k, v in pairs(opts) do copy[k] = v end
-  -- Runs only if every property arrived. A later call that takes over one of
-  -- them leaves it in awayKeys for that call to finish.
-  copy.onComplete = function(frame)
-    if self.visibilityToken == token then self.awayKeys = nil end
-    if userDone then userDone(frame) end
-  end
-  return self:to(targets, copy)
+  return animate(self, restingTargets(self, away), opts, true)
 end
 
 -- Animates to `away`, then hides the frame and resets it to rest while hidden.
@@ -492,8 +494,7 @@ function Motion:hide(away, opts)
       return
     end
     self.frame:Hide()
-    self:set(restingTargets(self, away))
-    self.awayKeys = nil
+    self:set(restingTargets(self, away)) -- set() releases each property it resets
     if userDone then userDone(self.frame) end
   end
   local copy = {}
@@ -509,8 +510,7 @@ function Motion:hide(away, opts)
     end
     if next(targets) == nil then finish() return self end
   end
-  markAway(self, targets)
-  return self:to(targets, copy)
+  return animate(self, targets, copy, true)
 end
 
 setmetatable(Poly, { __call = function(_, frame) return motionFor(frame) end })

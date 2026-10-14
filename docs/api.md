@@ -91,7 +91,11 @@ m:show({ alpha = 0, x = 120 }, { spring = "gentle" })
 - It cancels a running `hide()`, so that `Hide()` is never called. It also returns every property that hide was moving, so `hide("pop")` interrupted by `show("fade")` brings back scale as well as alpha.
 - In combat, the most recent `show()` or `hide()` wins. A `hide()` cancels a `show()` that was waiting for combat to end, and the reverse.
 
-**hide().** It animates to `away`. Then it calls `Hide()`, resets properties to rest while the frame is hidden, and calls `opts.onComplete`. The reset covers every property that a `show()` or `hide()` moved off rest and that hasn't arrived back yet. So a `hide()` that interrupts another hide, or a `show()` that is still restoring, still ends with the frame at rest. Properties you animate yourself with `to()` are left as they are.
+**hide().** It animates to `away`. Then it calls `Hide()`, resets properties to rest while the frame is hidden, and calls `opts.onComplete`. The reset covers every property that `show()` or `hide()` still owns. Ownership works per property:
+- A property becomes theirs when `show()` or `hide()` animates it.
+- It stops being theirs when its animation arrives back at rest, or when you take it over with `to()`, `set()` or `stop()`.
+
+So a `hide()` that interrupts another hide, or a `show()` that is still restoring, still ends with the frame at rest. Properties you have taken over are left as they are.
 
 **Rest values.** Poly records them when it first touches the frame: its alpha, scale, width and height, with `x = 0` and `y = 0`. A frame first touched at alpha 0 rests at alpha 1. Override them with `m:restAt({ alpha = 0.8 })`.
 

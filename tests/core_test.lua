@@ -311,4 +311,18 @@ test("a completed show leaves nothing for the next hide to reset", function()
   assert(not f.shown and f.s == 1.5, "hide reset a property the show had already restored: " .. f.s)
 end)
 
+test("taking over one show property keeps the others' own arrival", function()
+  local f = fakeFrame()
+  f.shown = false
+  local m = Poly(f)
+  m:show("pop", { duration = 0.2 })
+  m:to({ alpha = 1 }, { duration = 0.1 })
+  run(0.5)
+  m:to({ scale = 1.5 }, { duration = 0.1 })
+  run(0.3)
+  m:hide("fade", { duration = 0.1 })
+  run(0.3)
+  assert(not f.shown and f.s == 1.5, "hide reset a property the user had animated: " .. f.s)
+end)
+
 print(("CORE OK: %d tests"):format(passed))
