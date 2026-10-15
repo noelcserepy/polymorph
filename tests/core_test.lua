@@ -14,8 +14,9 @@
 -- GetTime() holds still within a frame and grows by OnUpdate's elapsed between frames: unmeasured
 -- A group's elapsed read in OnUpdate is GetTime() minus GetTime() in the frame it was played: anim_clock.lua, 2026-10-15
 -- Animations advance after scripts, so a group drawn in the frame it was played already counts it: anim_clock.lua, draw_lag.lua, 2026-10-15
--- Event and timer code runs before the frame's OnUpdate: unmeasured (native_tweens.lua, 2026-10-15, fits it but does not show the order)
--- C_Timer.After(0, fn) runs fn in the next frame: unmeasured
+-- Timer callbacks run before the frame's OnUpdate scripts: start_timing.lua, 2026-10-15 (60 of 60)
+-- Event code runs before the frame's OnUpdate: unmeasured
+-- C_Timer.After(0, fn) runs fn in the next frame: start_timing.lua, 2026-10-15 (60 of 60)
 -- OnFinished fires in the animation step of the frame whose elapsed reaches the duration, before drawing: unmeasured
 --
 -- Combat:
@@ -50,7 +51,8 @@
 -- SetPoint(final) then Play(true) from the start offset draws the start in the group's first frame from a
 --   C_Timer callback: native_order.lua, 2026-10-15 (0 of 32 recorded starts misdrew). From OnUpdate it can
 --   draw the offset against the anchor from before the frame's scripts for 1-2 frames (3 of 8 starts).
---   The fake misdraws every such start from OnUpdate, for one frame.
+--   The fake misdraws every such start from OnUpdate, for one frame. Polymorph's start timer: native_contexts.lua,
+--   2026-10-15 (96 recorded starts at 120 fps, called from a timer, an OnUpdate, a delay and onComplete, 0 flagged).
 -- A finished group stops drawing, so the frame draws its own values again: native_order.lua, 2026-10-15 (SetPoint in OnFinished, no snap in 32 recorded finishes)
 -- A group finishes when its longest animation ends: unmeasured
 -- IsPlaying() is true while paused, and false after Stop() or finishing: unmeasured (the library does not call it)

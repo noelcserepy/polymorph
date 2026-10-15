@@ -155,5 +155,5 @@ end })
 
 ## Checking your work
 
-- `Poly.stats()` returns `frames`, `ms` (total driver Lua time), `peakTracks` and `active`. `Poly.resetStats()` clears them. Use it to report animation cost in-game.
+- `Poly.stats()` returns `frames`, `ms` (total Lua time in the driver and the native start timer), `peakTracks` and `active`. `Poly.resetStats()` clears them. Use it to report animation cost in-game.
 - After a `hide()`, the frame is hidden and back at rest. After a `show()`, it is shown and at rest. If a frame stays faded but shown, look for a `Show()` or `SetAlpha()` of your own that fights Polymorph (rules 2 and 3).
