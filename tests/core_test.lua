@@ -500,9 +500,8 @@ test("native tween handed to Lua: a delay waits and velocity carries over", func
   m:to({ x = 100 }, { duration = 1, ease = "linear" })
   run(0.5)
   m:to({ x = 0 }, { duration = 1, ease = "outCubic", delay = 0.5 })
-  local held = m:get("x")
   run(0.5)
-  assert(near(m:get("x"), held, 1e-6), "moved during its delay: " .. held .. " -> " .. m:get("x"))
+  assert(near(m:get("x"), 50, 1e-6), "moved during its delay: " .. m:get("x"))
   run(0.1)
   -- outCubic 50 -> 0, about 0.08 s in: near 39.
   assert(m:get("x") > 35 and m:get("x") < 45, "x " .. m:get("x") .. " 0.1 s after the delay")
