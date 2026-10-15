@@ -106,9 +106,8 @@ function Region:CreateAnimationGroup()
     table.insert(ag.anims, a)
     return a
   end
-  -- A group played during a frame has already run that frame, as measured.
   function ag:Play(reverse)
-    self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, tick
+    self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
     for _, a in ipairs(self.anims) do a.forced = nil end
   end
   function ag:Pause() self.paused = true end
@@ -198,11 +197,12 @@ assert(loadfile(libPath))("Polymorph", {})
 
 local M = assert(loadfile(answerPath))()
 
+-- Runs frames as the client does: scripts, then animations, then drawing.
+-- Code between calls runs at the start of the next frame, as an event does.
+-- Timers run before the OnUpdates here. Their order in the client is unmeasured.
 local function run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
-    now, tick = now + dt, dt
-    advanceAnimations(dt)
     for i = #timers, 1, -1 do
       local t = timers[i]
       if now >= t.at then table.remove(timers, i); if not t.cancelled then t.fn(t) end end
@@ -210,8 +210,10 @@ local function run(seconds, fps)
     -- Every frame's OnUpdate runs, as in the game: Polymorph's driver and the answer's own.
     for _, f in ipairs(frames) do
       local fn = f.scripts.OnUpdate
-      if fn and f:IsVisible() then fn(f, dt) end
+      if fn and f:IsVisible() then fn(f, tick) end
     end
+    advanceAnimations(tick)
+    now, tick = now + dt, dt
   end
 end
 local function fire(e) for _, f in ipairs(events[e] or {}) do local fn = f.scripts.OnEvent; if fn then fn(f, e) end end end

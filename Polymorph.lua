@@ -30,10 +30,20 @@ end
 local InCombatLockdown, GetTime, GetTickTime = InCombatLockdown, GetTime, GetTickTime
 local abs, min, max = math.abs, math.min, math.max
 
--- The game counts an animation started during a frame from the frame before:
--- it draws the animation one frame in already. Lua tracks and native tweens
--- start from the same time, so both draw the same value in every frame.
+-- The time of the last drawn frame. The game counts an animation started
+-- during a frame from this time, and draws it one frame in already. New Lua
+-- tracks start from it too, so both draw the same value in every frame.
 local function frameStart() return GetTime() - GetTickTime() end
+
+-- The time every track's value belongs to: this frame once the driver has
+-- stepped, otherwise the last drawn frame. A value read or carried over at any
+-- point in a frame is paired with this time, so a retarget never moves it.
+local lastStep
+local function trackTime()
+  local now = GetTime()
+  if lastStep == now then return now end
+  return now - GetTickTime()
+end
 
 ---------------------------------------------------------------------------
 -- Easing
@@ -349,6 +359,7 @@ local function update()
   -- Each Lua track moves by the time since it last moved, so a track that
   -- joined or left native drawing this frame moves only by what is left.
   local now = GetTime()
+  lastStep = now
   local tracks = 0
   local inCombat = InCombatLockdown()
   for m in pairs(active) do
@@ -463,10 +474,12 @@ end
 -- Starts a native tween when the rule allows: a tween that hasn't stepped yet,
 -- no delay left, the frame unlocked, a curve the game has, and a group left in
 -- the budget. A native Alpha interpolates clamped ends, so alpha outside 0..1
--- stays in Lua. Returns whether it started.
+-- stays in Lua. The game draws a new animation from the last drawn frame, so a
+-- track the driver has already moved this frame stays in Lua too. Returns
+-- whether it started.
 function tryNative(m, name, t, isLocked)
   if t.native or t.spring or t.elapsed ~= 0 or t.delay > 0 or isLocked or t.duration <= 0
-      or not PROPS[name].tween or not NATIVE_SMOOTHING[t.ease] then
+      or not PROPS[name].tween or not NATIVE_SMOOTHING[t.ease] or t.time >= GetTime() then
     return false
   end
   if name == "alpha" and not (t.value >= 0 and t.value <= 1 and t.target >= 0 and t.target <= 1) then
@@ -495,15 +508,14 @@ function tryNative(m, name, t, isLocked)
     commit(m)
     ch.ag:Play(true)
   end
-  t.native, t.startedAt = ch, frameStart()
+  t.native, t.startedAt = ch, t.time
   return true
 end
 
--- Progress, value and velocity of a native track, from the time since it
--- started and the track's own ease. GetTime() is the same all frame, so this
--- holds whatever order the game runs events, scripts and animations in.
+-- Progress, value and velocity of a native track at trackTime(), from its
+-- start and the track's own ease.
 local function nativeState(t)
-  local p = min(1, max(0, (GetTime() - t.startedAt) / t.duration))
+  local p = min(1, max(0, (trackTime() - t.startedAt) / t.duration))
   local ease, span = t.ease, t.target - t.from
   local q = max(0, p - 0.001)
   local velocity = p > q and span * (ease(p) - ease(q)) / (p - q) / t.duration or 0
@@ -517,7 +529,7 @@ local function nativeToLua(t)
   local p
   t.value, t.velocity, p = nativeState(t)
   t.elapsed = p * t.duration
-  t.time = GetTime()
+  t.time = trackTime()
   t.native.ag:Stop()
   t.native = nil
 end

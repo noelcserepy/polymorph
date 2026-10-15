@@ -33,7 +33,7 @@ local CURVES = {
   IN_OUT = function(p) return (1 - math.cos(p * math.pi)) / 2 end,
 }
 local allGroups = {}
--- Native animations advance before the driver's OnUpdate.
+-- Native animations advance after the frame's scripts, as the client runs them.
 local function advanceAnimations(dt)
   for _, ag in ipairs(allGroups) do
     if ag.playing and not ag.paused then
@@ -100,9 +100,8 @@ local function fakeFrame(protected)
       ag.anims[#ag.anims + 1] = a
       return a
     end
-    -- A group played during a frame has already run that frame, as measured.
     function ag:Play(reverse)
-      self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, tick
+      self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
       for _, a in ipairs(self.anims) do a.forced = nil end
     end
     function ag:Pause() self.paused = true end
@@ -187,12 +186,16 @@ local ns = { dev = true }
 assert(loadfile(path))("Polymorph", ns)
 local Poly = ns.Polymorph
 
+-- Runs frames as the client does: scripts, then animations, then drawing.
+-- Test code between calls runs at the start of the next frame, as an event
+-- does, so GetTickTime() is that frame's elapsed time and Visual() what the
+-- last frame drew.
 local function run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
+    if driverScript then driverScript(nil, tick) end
+    advanceAnimations(tick)
     clock, tick = clock + dt, dt
-    advanceAnimations(dt)
-    if driverScript then driverScript(nil, dt) end
   end
 end
 
@@ -219,10 +222,9 @@ test("tween follows its curve and calls onComplete once", function()
   local f = fakeFrame()
   local calls = 0
   Poly(f):to({ width = 300 }, { duration = 0.25, ease = "outCubic", onComplete = function() calls = calls + 1 end })
-  -- Like the game's animations, a tween counts the frame it started in.
-  local p = (0.125 + GetTickTime()) / 0.25
   run(0.125, 120)
-  assert(near(f.w, 100 + 200 * Poly.easings.outCubic(p), 0.01), f.w)
+  -- The first frame ran at the previous 60 fps.
+  assert(near(f.w, 100 + 200 * Poly.easings.outCubic((1 / 60 + 14 / 120) / 0.25), 1e-6), f.w)
   run(0.5)
   assert(f.w == 300 and calls == 1, f.w .. " " .. calls)
 end)
@@ -312,13 +314,12 @@ test("native tween: drawn by the game on the measured curve, no Lua per frame", 
   local m = Poly(f)
   local done = 0
   m:to({ alpha = 1, x = 100 }, { duration = 1, ease = "outSine", onComplete = function() done = done + 1 end })
-  local started = GetTickTime() -- it counts the frame it started in
   assert(f.alpha == 1 and f.point[4] == 110, "final values not written first")
   run(1 / 60)
   assert(driverScript == nil, "driver still running for native tweens")
   assert(Poly.stats().active == 1, "stats() does not count a natively moving frame")
   run(0.5 - 1 / 60)
-  local want = math.sin((0.5 + started) * math.pi / 2)
+  local want = math.sin(math.pi / 4)
   assert(near(f:VisualAlpha(), want, 1e-3) and near(f:VisualX(), 10 + 100 * want, 0.1), f:VisualAlpha() .. " " .. f:VisualX())
   assert(near(m:get("alpha"), f:VisualAlpha(), 1e-3) and near(m:get("x") + 10, f:VisualX(), 0.1), "get() differs from drawing")
   run(0.6)
@@ -336,6 +337,34 @@ test("native and Lua tweens started together draw the same in every frame", func
     run(1 / 60)
     assert(near(native:VisualX(), lua:VisualX(), 1e-6), native:VisualX() .. " vs " .. lua:VisualX())
   end
+  run(1)
+end)
+
+test("a retarget keeps the value, however often and wherever in the frame it runs", function()
+  -- pr-reviewer's case: each of ten native retargets in one frame moved x.
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  local x, drawn = m:get("x"), f:VisualX()
+  assert(near(x + 10, drawn), "get " .. x .. " vs drawn " .. drawn)
+  for _ = 1, 10 do m:to({ x = 1000 }, { duration = 1, ease = "linear" }) end
+  assert(near(m:get("x"), x) and near(f:VisualX(), drawn), "retargets moved x to " .. m:get("x"))
+  run(0.25)
+  assert(near(m:get("x"), x + (1000 - x) * 0.25) and near(m:get("x") + 10, f:VisualX()), "x " .. m:get("x"))
+  run(1)
+
+  -- A retarget after the driver has moved the frame this time, from a callback.
+  local g = fakeFrame()
+  local n = Poly(g)
+  n:to({ x = 100 }, { duration = 1, ease = function(p) return p end })
+  n:to({ alpha = 0.5 }, { duration = 0.25, ease = function(p) return p end, onComplete = function()
+    x = n:get("x")
+    n:to({ x = 0 }, { duration = 1, ease = "linear" })
+    assert(near(n:get("x"), x), "callback retarget moved x from " .. x .. " to " .. n:get("x"))
+  end })
+  run(0.5)
+  assert(near(n:get("x") + 10, g:VisualX()), "get " .. n:get("x") .. " vs drawn " .. g:VisualX())
   run(1)
 end)
 
@@ -364,12 +393,11 @@ test("native tween on a protected frame: combat midway blocks nothing, retarget 
   local f = fakeFrame(true)
   local m = Poly(f)
   m:to({ x = 100 }, { duration = 1, ease = "linear" })
-  local started = GetTickTime()
   run(0.3)
   combat = true
   run(0.2)
   local drawn = f:VisualX()
-  assert(near(drawn, 10 + 100 * (0.5 + started)), "native move stopped in combat: " .. drawn)
+  assert(near(drawn, 60, 1e-6), "native move stopped in combat: " .. drawn)
   m:to({ x = 0 }, { duration = 0.5 })
   assert(near(f:VisualX(), drawn), "jump when the puppet took over")
   run(1)
@@ -443,17 +471,17 @@ end)
 
 test("native tween handed to the puppet mid-update moves one frame's worth, not two", function()
   for _, other in ipairs({ { y = 2 }, { scale = 2 } }) do
+    run(0.1, 10) -- every frame from the start lasts 0.1 s
     local f = fakeFrame(true)
     local m = Poly(f)
     m:to({ x = 100 }, { duration = 1, ease = "linear" })
     m:to(other, { duration = 2, ease = "outCubic" })
-    local started = GetTickTime()
     run(0.5, 10)
     combat = true
     run(0.1, 10)
-    assert(near(m:get("x"), 100 * (0.6 + started), 1e-6), "x " .. m:get("x") .. " at t = 0.6")
+    assert(near(m:get("x"), 60, 1e-6), "x " .. m:get("x") .. " at t = 0.6")
     run(0.3, 10)
-    assert(near(m:get("x"), 100 * (0.9 + started), 1e-6), "x " .. m:get("x") .. " at t = 0.9")
+    assert(near(m:get("x"), 90, 1e-6), "x " .. m:get("x") .. " at t = 0.9")
     combat = false
     fire("PLAYER_REGEN_ENABLED")
     run(2)
