@@ -103,13 +103,13 @@ In combat, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide` on protected
 | `hide()` | Fades, slides and shrinks now. The real `Hide()` happens when combat ends, and the faded frame still takes clicks until then. |
 | `show()` on a hidden frame | Waits for combat to end. |
 
-Everything in this table was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions.
+Everything in this table was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions. That includes a bar that slides in from a `PLAYER_REGEN_DISABLED` handler, as combat locks it.
 
 ## Performance
 
 One shared `OnUpdate` drives every animation, and it switches itself off when nothing moves. Polymorph creates no timers per animation. That matters because the game caps each addon at 500 timers. In a test with 200 frames animating three properties each (600 springs at once), the driver used 0.89 ms of Lua time per frame, the median of 7 runs. A typical addon animates a few dozen properties at a time.
 
-Tweens of `alpha`, `x` or `y` with `linear`, `inSine`, `outSine` or `inOutSine` run as the game's own animations, with no Lua per frame. These four are the curves the game has built in.
+Tweens of `alpha`, `x` or `y` with `linear`, `inSine`, `outSine` or `inOutSine` run as the game's own animations, with no Lua per frame. These four are the curves the game has built in. Such a tween holds its start value for one frame, then one shared timer starts it. Started from an `OnUpdate` script, the game sometimes drew a sliding frame's first frames far outside its path.
 
 ## Reference
 

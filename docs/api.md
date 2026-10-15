@@ -149,11 +149,13 @@ During combat lockdown, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide`
 
 Every row except `set()` was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions. For `scale`, the test covered combat starting and ending in the middle of an `x` and `scale` tween, and a `scale` spring followed by `hide("pop")` in combat.
 
+You can start animations on protected frames in a `PLAYER_REGEN_DISABLED` handler. In two real fights, `InCombatLockdown()` was still false inside that handler and true one frame later. So a native `x` or `y` tween queued there found the frame locked when it started. Polymorph then ran it through the combat animation, with no jump and no blocked actions.
+
 ## Performance and limits
 
 - **One driver.** A single shared `OnUpdate` frame steps every animation. It turns itself off when nothing moves.
 - **Few game calls.** Stepping the animations makes one `InCombatLockdown()` call per update. Each frame then gets at most one `SetPoint` for `x` and `y` together, and one `SetSize` for `width` and `height` together, or `SetWidth` or `SetHeight` when only one moves. Finishing work, such as a `hide()` resetting the frame, makes its own calls.
-- **No timers.** Polymorph makes no per-animation timers. The game caps each addon at 500 timers and 2000 animation groups. Animation groups are made once per frame and reused: one for a frame animated in combat, and one per property for native tweens. Polymorph stops making native groups after 1000, and later tweens run in Lua.
+- **No timers.** Polymorph makes no per-animation timers. One shared timer starts native tweens, and at most one is pending at a time. The game caps each addon at 500 timers and 2000 animation groups. Animation groups are made once per frame and reused: one for a frame animated in combat, and one per property for native tweens. Polymorph stops making native groups after 1000, and later tweens run in Lua.
 - **Allocation.** While animations only run, the driver allocates nothing per frame. Allocation happens when work starts or ends:
   - Each `to()` call allocates one small closure, plus a track table for each property that wasn't already moving. `show()` and `hide()` also build small tables of targets.
   - A `hide()` builds one more table when it finishes, to reset the frame.
@@ -167,7 +169,9 @@ A tween of `alpha`, `x` or `y` runs as one of the game's own animations when all
 - it has a `duration` above 0,
 - the frame isn't locked when the tween starts. A `delay` is fine. The tween starts natively once the delay is over.
 
-The game then draws the whole tween, and Polymorph runs no Lua for it until it ends. Polymorph writes the final value first, and the native animation draws the way there. So `GetAlpha()` and `GetPoint()` already return the final values while it plays. Use `m:get()` for the value it draws. Retargeting, `stop()`, `set()` and combat starting midway all work as they do in Lua. Polymorph computes the drawn value from the time since the tween started and continues from there.
+The tween holds its start value until the next frame, when one shared timer starts every native tween queued since. Started from an `OnUpdate` script, a native `x` or `y` tween sometimes drew its first frame or two against the old anchor, far outside its path. Started from a timer, it never did in the recordings. Timers run before `OnUpdate` scripts, so a native tween called from a timer draws one frame later than the same tween in Lua would. Called from an `onComplete` callback, they draw the same.
+
+The game then draws the whole tween, and Polymorph runs no Lua for it until it ends. Polymorph writes the final value when the tween starts, and the native animation draws the way there. So `GetAlpha()` and `GetPoint()` already return the final values while it plays. Use `m:get()` for the value it draws. Retargeting, `stop()`, `set()` and combat starting midway all work as they do in Lua. Polymorph computes the drawn value from the time since the tween started and continues from there.
 
 Springs, the other easings, `scale`, `width` and `height` always run in Lua. So does an `alpha` tween that starts or ends outside 0..1, so that it follows exactly the curve it would in Lua. When combat lockdown makes Polymorph draw a frame's position through its combat animation, a native `x` or `y` tween on that frame continues in Lua from where it draws.
 
@@ -176,13 +180,15 @@ Measured in the client:
 - that getters ignore native animations,
 - that a native Alpha replaces the frame's own alpha instead of multiplying it,
 - that Translations in separate groups add up,
-- that a native tween, a Lua tween and the game's own Translation, started together, draw on the same pixel.
+- that a Lua tween and the game's own Translation, started together, draw on the same pixel,
+- that a Translation started from a timer draws its first frames in place: 0 of 32 recorded starts misdrew, against 3 of 8 started from `OnUpdate`,
+- that the start timer runs in the next frame, before `OnUpdate` scripts, and that Polymorph's native `x` tweens drew in place in 96 recorded starts at 120 fps, called from a timer, another frame's `OnUpdate`, after a `delay` and from `onComplete`.
 
-With 300 frames tweening `x` at once, the driver used 0.73 ms of Lua per frame when the tweens ran in Lua. Native, it ran once, for 0.19 ms, when the tweens started.
+With 300 frames tweening `x` at once, Polymorph used 0.65 to 0.71 ms of Lua per frame when the tweens ran in Lua. Native, it spent 2.1 ms once, in the start timer, to start all 300, and no Lua after that. Two runs each, at 60 fps.
 
 `Poly.stats()` returns:
 - `frames`: driver updates counted,
-- `ms`: total Lua time in the driver,
+- `ms`: total Lua time in the driver and the start timer,
 - `peakTracks`: the most properties on the frames the driver visited in one update. A frame whose tweens are all native leaves the driver, so its properties don't count.
 - `active`: frames currently moving, including frames whose tweens only the game draws.
 
