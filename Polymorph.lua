@@ -27,8 +27,21 @@ else
   if not Poly then return end -- an equal or newer copy is already loaded
 end
 
-local InCombatLockdown = InCombatLockdown
+local InCombatLockdown, GetTime, GetTickTime = InCombatLockdown, GetTime, GetTickTime
 local abs, min, max = math.abs, math.min, math.max
+
+-- The time every track's value belongs to: this frame once the driver has
+-- stepped, otherwise the last drawn frame. Every value Polymorph sets, reads or
+-- carries over is paired with this time, so a retarget never moves it. The game
+-- counts an animation started during a frame from the last drawn frame, and
+-- draws it one frame in already. A Lua track started before the driver steps
+-- counts from there too, so both draw the same value in every frame.
+local lastStep
+local function trackTime()
+  local now = GetTime()
+  if lastStep == now then return now end
+  return now - GetTickTime()
+end
 
 ---------------------------------------------------------------------------
 -- Easing
@@ -65,8 +78,17 @@ local function bezier(x1, y1, x2, y2)
   end
 end
 
+local HALF_PI = math.pi / 2
+local function linear(p) return p end
+local function inSine(p) return 1 - math.cos(p * HALF_PI) end
+local function outSine(p) return math.sin(p * HALF_PI) end
+local function inOutSine(p) return (1 - math.cos(p * math.pi)) / 2 end
+
 Poly.easings = {
-  linear = function(p) return p end,
+  linear = linear,
+  inSine = inSine,
+  outSine = outSine,
+  inOutSine = inOutSine,
   inQuad = function(p) return p * p end,
   outQuad = function(p) return 1 - (1 - p) * (1 - p) end,
   inOutQuad = function(p)
@@ -85,6 +107,17 @@ Poly.easings = {
   easeInOut = bezier(0.42, 0, 0.58, 1),
 }
 Poly.bezier = bezier
+
+-- The game's own smoothing curves, measured in the client: NONE is linear, IN
+-- is 1 - cos(p·π/2), OUT is sin(p·π/2), IN_OUT is (1 - cos(p·π)) / 2. A tween
+-- with one of these eases can run as a native animation. Played in reverse, a
+-- curve runs mirrored, so a reversed IN draws outSine.
+local NATIVE_SMOOTHING = {
+  [linear] = { forward = "NONE", reverse = "NONE" },
+  [inSine] = { forward = "IN", reverse = "OUT" },
+  [outSine] = { forward = "OUT", reverse = "IN" },
+  [inOutSine] = { forward = "IN_OUT", reverse = "IN_OUT" },
+}
 
 -- Spring presets use react-spring's names and values (tension, friction, mass 1).
 Poly.springs = {
@@ -129,8 +162,12 @@ end
 -- point to where SetScale would put it: offset * k - layout, with
 -- k = drawScale / layoutScale. Both facts were measured in the client.
 local puppeted = {} -- motion -> true while its puppet is displaced
+local handNativeToPuppet -- defined with the native tween code below
 
 local function puppetMove(m)
+  -- The puppet's offsets assume it owns every displacement, so a native x or y
+  -- tween still drawing becomes a Lua track first.
+  handNativeToPuppet(m)
   local p = m.puppet
   if not p then
     local ag = m.frame:CreateAnimationGroup()
@@ -199,7 +236,7 @@ end
 
 local PROPS = {
   alpha = {
-    precision = 0.001,
+    precision = 0.001, tween = "Alpha",
     read = function(m) return m.frame:GetAlpha() end,
     write = function(m, v) m.frame:SetAlpha(min(1, max(0, v))) end,
   },
@@ -229,13 +266,13 @@ local PROPS = {
     staged = "stagedHeight", flush = writeSize,
   },
   x = {
-    restricted = true, native = true, precision = 0.05,
+    restricted = true, native = true, precision = 0.05, tween = "Translation",
     read = function(m) return m.offsetX end,
     write = function(m, v) m.offsetX = v; writeLayout(m) end,
     staged = "offsetX", flush = writeLayout,
   },
   y = {
-    restricted = true, native = true, precision = 0.05,
+    restricted = true, native = true, precision = 0.05, tween = "Translation",
     read = function(m) return m.offsetY end,
     write = function(m, v) m.offsetY = v; writeLayout(m) end,
     staged = "offsetY", flush = writeLayout,
@@ -291,7 +328,7 @@ local function stepTween(t, dt)
   local last, from = t.value, t.from
   local value = from + (t.target - from) * t.ease(p)
   t.value = value
-  t.velocity = dt > 0 and (value - last) / dt or 0
+  if dt > 0 then t.velocity = (value - last) / dt end
   return p >= 1
 end
 
@@ -306,9 +343,21 @@ local function queueCallback(fn, frame, name, takenOver)
   c[1], c[2], c[3], c[4] = fn, frame, name, takenOver
 end
 
-local function update(_, elapsed)
+local function arrive(m, name, t)
+  t.value = t.target
+  m.tracks[name] = nil
+  if m.awayKeys and m.awayKeys[name] and t.target == m.rest[name] then m.awayKeys[name] = nil end
+  if t.onDone then queueCallback(t.onDone, m.frame, name) end
+end
+
+local tryNative -- defined with the other native tween code below
+
+local function update()
   local started = profile()
-  local dt = min(elapsed, 0.1)
+  -- Each Lua track moves by the time since it last moved, so a track that
+  -- joined or left native drawing this frame moves only by what is left.
+  local now = GetTime()
+  lastStep = now
   local tracks = 0
   local inCombat = InCombatLockdown()
   for m in pairs(active) do
@@ -318,34 +367,48 @@ local function update(_, elapsed)
     -- Properties that share a game call (x and y, width and height) stage
     -- their values, and each call runs once after the loop.
     local flush1, flush2
+    local stepped = false
     for name, t in pairs(m.tracks) do
       tracks = tracks + 1
       local prop = PROPS[name]
-      if t.delay > 0 then
-        t.delay = t.delay - dt
-      elseif not (isLocked and waitsWhileLocked(prop)) then
-        local rest
-        if t.spring then rest = stepSpring(t, dt) else rest = stepTween(t, dt) end
-        if rest then t.value = t.target end
-        local staged = prop.staged
-        if staged then
-          m[staged] = t.value
-          local flush = prop.flush
-          if not flush1 or flush1 == flush then flush1 = flush else flush2 = flush end
-        else
-          prop.write(m, t.value)
-        end
-        if rest then
-          m.tracks[name] = nil
-          if m.awayKeys and m.awayKeys[name] and t.target == m.rest[name] then m.awayKeys[name] = nil end
-          if t.onDone then queueCallback(t.onDone, m.frame, name) end
+      -- tryNative owns the start rule. Only a tween that hasn't stepped can
+      -- start, so this filter skips the call for every running track.
+      if t.elapsed == 0 then tryNative(m, name, t, isLocked) end
+      -- A native track is drawn by the game, and its OnFinished arrives it.
+      if not t.native then
+        stepped = true
+        local step = now - t.time
+        if step > 0.1 then step = 0.1 end -- a long hitch doesn't make a spring jump
+        t.time = now
+        if t.delay > 0 then
+          t.delay = t.delay - step
+        elseif not (isLocked and waitsWhileLocked(prop)) then
+          local rest
+          if t.spring then rest = stepSpring(t, step) else rest = stepTween(t, step) end
+          if rest then t.value = t.target end
+          local staged = prop.staged
+          if staged then
+            m[staged] = t.value
+            local flush = prop.flush
+            if not flush1 or flush1 == flush then flush1 = flush else flush2 = flush end
+          else
+            prop.write(m, t.value)
+          end
+          if rest then arrive(m, name, t) end
         end
       end
     end
     if flush1 then flush1(m) end
     if flush2 then flush2(m) end
-    if next(m.tracks) == nil then
-      active[m] = nil
+    -- Native tracks need no driver, so a frame with only those goes idle. A
+    -- native track can turn into a Lua track during the loop, and a Lua track
+    -- can arrive, so look again.
+    if not stepped or next(m.tracks) == nil then
+      local idle = true
+      for _, t in pairs(m.tracks) do
+        if not t.native then idle = false; break end
+      end
+      if idle then active[m] = nil end
     end
   end
   -- A callback can queue more callbacks. They run in this pass too.
@@ -369,6 +432,123 @@ local function wake(m)
     local wasIdle = next(active) == nil
     active[m] = true
     if wasIdle then driver:SetScript("OnUpdate", update) end
+  end
+end
+
+---------------------------------------------------------------------------
+-- Native tweens: an alpha, x or y tween whose ease the game has runs as a
+-- native animation, with no Lua per frame. Polymorph writes the final value
+-- first, and the animation draws the way there: an Alpha from the start value,
+-- or a Translation played in reverse from the start offset to 0. Nothing needs
+-- writing when it ends, so combat starting midway blocks nothing.
+--
+-- Each frame gets at most one group per property, created once and reused.
+---------------------------------------------------------------------------
+
+-- The game allows each addon 2000 animation groups, and the addon that embeds
+-- Polymorph shares them. Past this many, tweens run in Lua.
+local MAX_NATIVE_GROUPS = 1000
+local nativeGroups = 0
+
+local function nativeChannel(m, name)
+  m.native = m.native or {}
+  local ch = m.native[name]
+  if ch or nativeGroups >= MAX_NATIVE_GROUPS then return ch end
+  nativeGroups = nativeGroups + 1
+  local ag = m.frame:CreateAnimationGroup()
+  ch = { ag = ag, anim = ag:CreateAnimation(PROPS[name].tween) }
+  ag:SetScript("OnFinished", function()
+    local t = m.tracks[name]
+    if t and t.native == ch then
+      t.native = nil
+      arrive(m, name, t)
+      wake(m) -- runs the callback on the next update
+    end
+  end)
+  m.native[name] = ch
+  return ch
+end
+
+-- Starts a native tween when the rule allows: a tween that hasn't stepped yet,
+-- no delay left, the frame unlocked, a curve the game has, and a group left in
+-- the budget. A native Alpha interpolates clamped ends, so alpha outside 0..1
+-- stays in Lua. The game draws a new animation from the last drawn frame, so a
+-- track the driver has already moved this frame stays in Lua too. Returns
+-- whether it started.
+function tryNative(m, name, t, isLocked)
+  if t.native or t.spring or t.elapsed ~= 0 or t.delay > 0 or isLocked or t.duration <= 0
+      or not PROPS[name].tween or not NATIVE_SMOOTHING[t.ease] or t.time >= GetTime() then
+    return false
+  end
+  if name == "alpha" and not (t.value >= 0 and t.value <= 1 and t.target >= 0 and t.target <= 1) then
+    return false
+  end
+  local ch = nativeChannel(m, name)
+  if not ch then return false end
+  local smoothing, a = NATIVE_SMOOTHING[t.ease], ch.anim
+  a:SetDuration(t.duration)
+  if name == "alpha" then
+    a:SetSmoothing(smoothing.forward)
+    a:SetFromAlpha(t.value)
+    a:SetToAlpha(t.target)
+    PROPS.alpha.write(m, t.target)
+    ch.ag:Play()
+  else
+    a:SetSmoothing(smoothing.reverse)
+    local d = t.value - t.target
+    if name == "x" then
+      m.offsetX = t.target
+      a:SetOffset(d, 0)
+    else
+      m.offsetY = t.target
+      a:SetOffset(0, d)
+    end
+    commit(m)
+    ch.ag:Play(true)
+  end
+  t.native, t.startedAt = ch, t.time
+  return true
+end
+
+-- Progress, value and velocity of a native track at trackTime(), from its
+-- start and the track's own ease.
+local function nativeState(t)
+  local p = min(1, max(0, (trackTime() - t.startedAt) / t.duration))
+  local ease, span = t.ease, t.target - t.from
+  local q = max(0, p - 0.001)
+  local velocity = p > q and span * (ease(p) - ease(q)) / (p - q) / t.duration or 0
+  return t.from + span * ease(p), velocity, p
+end
+
+-- The one way a native track becomes a Lua track: stop the animation and carry
+-- on the same tween from where it is, with its value, velocity and elapsed time.
+-- The caller writes where the frame draws.
+local function nativeToLua(t)
+  local p
+  t.value, t.velocity, p = nativeState(t)
+  t.elapsed = p * t.duration
+  t.time = trackTime()
+  t.native.ag:Stop()
+  t.native = nil
+end
+
+-- Stops a native track where it draws, and leaves it as a Lua track there.
+local function freezeNative(m, name, t)
+  nativeToLua(t)
+  m.isLocked = locked(m)
+  PROPS[name].write(m, t.value)
+end
+
+local LAYOUT_FIELD = { x = "offsetX", y = "offsetY" }
+
+function handNativeToPuppet(m)
+  for name, field in pairs(LAYOUT_FIELD) do
+    local t = m.tracks[name]
+    if t and t.native then
+      nativeToLua(t)
+      m[field] = t.value
+      wake(m)
+    end
   end
 end
 
@@ -433,8 +613,9 @@ local function animate(m, targets, opts, owner)
     local t = m.tracks[name]
     if t then
       takeOver(m, name)
+      if t.native then freezeNative(m, name, t) end
     else
-      t = { value = prop.read(m), velocity = 0 }
+      t = { value = prop.read(m), velocity = 0, time = trackTime() }
       m.tracks[name] = t
     end
     t.target = target
@@ -456,6 +637,7 @@ local function animate(m, targets, opts, owner)
     end
     pending = pending + 1
     t.onDone = settled
+    tryNative(m, name, t, locked(m))
   end
   if pending > 0 then wake(m) end
   return m
@@ -475,6 +657,8 @@ function Motion:set(values)
   for name, value in pairs(values) do
     local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 2)
     takeOver(self, name)
+    local t = self.tracks[name]
+    if t and t.native then t.native.ag:Stop() end
     self.tracks[name] = nil
     release(self, name)
     if self.isLocked and waitsWhileLocked(prop) then
@@ -489,12 +673,15 @@ end
 -- Stops one property, or all of them, where they are.
 function Motion:stop(name)
   if name then
+    local t = self.tracks[name]
     takeOver(self, name)
+    if t and t.native then freezeNative(self, name, t) end
     self.tracks[name] = nil
     release(self, name)
   else
-    for n in pairs(self.tracks) do
+    for n, t in pairs(self.tracks) do
       takeOver(self, n)
+      if t.native then freezeNative(self, n, t) end
       self.tracks[n] = nil
     end
     self.awayKeys = nil
@@ -504,6 +691,10 @@ end
 
 function Motion:get(name)
   local t = self.tracks[name]
+  if t and t.native then
+    local value, velocity = nativeState(t)
+    return value, velocity, t.target
+  end
   if t then return t.value, t.velocity, t.target end
   return PROPS[name].read(self), 0, nil
 end
@@ -626,8 +817,11 @@ end
 setmetatable(Poly, { __call = function(_, frame) return motionFor(frame) end })
 
 function Poly.stats()
+  -- Frames the driver steps, and frames whose tweens only the game draws.
   local moving = 0
-  for _ in pairs(active) do moving = moving + 1 end
+  for _, m in pairs(motions) do
+    if next(m.tracks) then moving = moving + 1 end
+  end
   return { frames = stats.frames, ms = stats.ms, peakTracks = stats.peakTracks, active = moving }
 end
 

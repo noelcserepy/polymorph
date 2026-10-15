@@ -7,6 +7,9 @@ local driverScript
 local eventHandlers = {}
 _G.InCombatLockdown = function() return combat end
 _G.debugprofilestop = function() return os.clock() * 1000 end
+local clock, tick = 0, 1 / 60
+_G.GetTime = function() return clock end
+_G.GetTickTime = function() return tick end
 _G.CreateFrame = function()
   local f = {}
   function f:SetScript(name, fn)
@@ -20,6 +23,29 @@ _G.CreateFrame = function()
 end
 local function fire(e)
   for _, f in ipairs(eventHandlers[e] or {}) do f.onEvent(f, e) end
+end
+
+-- The game's smoothing curves, measured in the client.
+local CURVES = {
+  NONE = function(p) return p end,
+  IN = function(p) return 1 - math.cos(p * math.pi / 2) end,
+  OUT = function(p) return math.sin(p * math.pi / 2) end,
+  IN_OUT = function(p) return (1 - math.cos(p * math.pi)) / 2 end,
+}
+local allGroups = {}
+-- Native animations advance after the frame's scripts, as the client runs them.
+local function advanceAnimations(dt)
+  for _, ag in ipairs(allGroups) do
+    if ag.playing and not ag.paused then
+      ag.elapsed = ag.elapsed + dt
+      local longest = 0
+      for _, a in ipairs(ag.anims) do longest = math.max(longest, a.duration) end
+      if ag.elapsed >= longest then
+        ag.playing = false
+        if ag.onFinished then ag.onFinished(ag) end
+      end
+    end
+  end
 end
 
 local function fakeFrame(protected)
@@ -45,34 +71,63 @@ local function fakeFrame(protected)
     self.pointCalls = self.pointCalls + 1
   end
   function f:IsProtected() return protected end
-  -- Native animation groups, paused at full progress, as measured in the client:
-  -- a Translation offset is in the frame's scaled units and ignores the Scale,
-  -- and a Scale grows the frame around its origin point (CENTER by default).
-  f.nativeX, f.nativeY, f.nativeScale, f.nativeOrigin = 0, 0, 1, { "CENTER", 0, 0 }
+  -- Native animation groups, as measured in the client. Progress runs over the
+  -- duration, backwards when played in reverse, through the smoothing curve. A
+  -- Translation offset is in the frame's scaled units and ignores any Scale. A
+  -- Scale grows the frame around its origin, CENTER by default. An Alpha draws
+  -- its own value in place of the frame's. Groups on one frame add up.
+  local groups = {}
   function f:CreateAnimationGroup()
-    local ag = { playing = false, anims = {} }
-    local function apply()
-      local tr, sc = ag.anims.Translation, ag.anims.Scale
-      f.nativeX, f.nativeY = ag.playing and tr and tr.ox or 0, ag.playing and tr and tr.oy or 0
-      f.nativeScale = ag.playing and sc and sc.k or 1
-      f.nativeOrigin = sc and sc.origin or { "CENTER", 0, 0 }
-    end
+    local ag = { playing = false, paused = false, reverse = false, elapsed = 0, anims = {} }
+    groups[#groups + 1] = ag
+    allGroups[#allGroups + 1] = ag
     function ag:CreateAnimation(kind)
-      local a = { ox = 0, oy = 0, k = 1 }
-      function a:SetDuration() end
-      function a:SetSmoothing() end
-      function a:SetSmoothProgress() end
-      function a:SetScaleFrom() end
-      function a:SetOrigin(point, x, y) self.origin = { point, x or 0, y or 0 }; apply() end
-      function a:SetOffset(x, y) self.ox, self.oy = x, y; apply() end
-      function a:SetScaleTo(x, y) assert(x == y); self.k = x; apply() end
-      ag.anims[kind] = a
+      local a = { kind = kind, duration = 1, smoothing = "NONE", ox = 0, oy = 0, k = 1, origin = { "CENTER", 0, 0 } }
+      function a:SetDuration(d) self.duration = d end
+      function a:SetSmoothing(v) assert(CURVES[v], v); self.smoothing = v end
+      function a:SetSmoothProgress(v) self.forced = v end
+      function a:GetProgress()
+        local p = math.min(1, ag.elapsed / self.duration)
+        return ag.reverse and 1 - p or p
+      end
+      function a:GetSmoothProgress() return self.forced or CURVES[self.smoothing](self:GetProgress()) end
+      function a:SetScaleFrom(x, y) assert(x == 1 and y == 1) end
+      function a:SetScaleTo(x, y) assert(x == y); self.k = x end
+      function a:SetOrigin(point, x, y) self.origin = { point, x or 0, y or 0 } end
+      function a:SetOffset(x, y) self.ox, self.oy = x, y end
+      function a:SetFromAlpha(v) self.from = v end
+      function a:SetToAlpha(v) self.to = v end
+      ag.anims[#ag.anims + 1] = a
       return a
     end
-    function ag:Play() self.playing = true; apply() end
-    function ag:Pause() end
-    function ag:Stop() self.playing = false; apply() end
+    function ag:Play(reverse)
+      self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
+      for _, a in ipairs(self.anims) do a.forced = nil end
+    end
+    function ag:Pause() self.paused = true end
+    function ag:Stop() self.playing = false end
+    function ag:IsPlaying() return self.playing end
+    function ag:SetScript(name, fn) assert(name == "OnFinished"); self.onFinished = fn end
     return ag
+  end
+  -- What every playing group adds: translation, scale and its origin, alpha.
+  function f:Native()
+    local x, y, k, origin, alpha = 0, 0, 1, { "CENTER", 0, 0 }, nil
+    for _, ag in ipairs(groups) do
+      if ag.playing then
+        for _, a in ipairs(ag.anims) do
+          local sp = a:GetSmoothProgress()
+          if a.kind == "Translation" then
+            x, y = x + a.ox * sp, y + a.oy * sp
+          elseif a.kind == "Scale" then
+            k, origin = k * (1 + (a.k - 1) * sp), a.origin
+          elseif a.kind == "Alpha" then
+            alpha = a.from + (a.to - a.from) * sp
+          end
+        end
+      end
+    end
+    return x, y, k, origin, alpha
   end
   -- Where a named point of the frame sits, relative to its center, in its own units.
   local function pointOffset(point, w, h)
@@ -80,12 +135,12 @@ local function fakeFrame(protected)
     local y = point:find("TOP") and h / 2 or point:find("BOTTOM") and -h / 2 or 0
     return x, y
   end
-  -- Where the anchor point draws, in parent units, and the drawn scale.
+  -- Where the anchor point draws, in parent units, and the drawn scale and alpha.
   function f:Visual()
-    local s, k = self.s, self.nativeScale
-    local ax, ay = (self.point[4] + self.nativeX) * s, (self.point[5] + self.nativeY) * s
+    local nx, ny, k, o = self:Native()
+    local s = self.s
+    local ax, ay = (self.point[4] + nx) * s, (self.point[5] + ny) * s
     local px, py = pointOffset(self.point[1], self.w, self.h)
-    local o = self.nativeOrigin
     local ox, oy = pointOffset(o[1], self.w, self.h)
     ox, oy = ox + o[2], oy + o[3]
     -- The origin stays put and everything else scales away from it by k.
@@ -94,7 +149,8 @@ local function fakeFrame(protected)
   end
   function f:VisualX() return (self:Visual()) end
   function f:VisualY() return select(2, self:Visual()) end
-  function f:VisualScale() return self.s * self.nativeScale end
+  function f:VisualScale() return self.s * select(3, self:Native()) end
+  function f:VisualAlpha() return select(5, self:Native()) or self.alpha end
   f.shown = true
   f.hideCalls = 0
   function f:IsShown() return self.shown end
@@ -130,10 +186,16 @@ local ns = { dev = true }
 assert(loadfile(path))("Polymorph", ns)
 local Poly = ns.Polymorph
 
+-- Runs frames as the client does: scripts, then animations, then drawing.
+-- Test code between calls runs at the start of the next frame, as an event
+-- does, so GetTickTime() is that frame's elapsed time and Visual() what the
+-- last frame drew.
 local function run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
-    if driverScript then driverScript(nil, dt) end
+    if driverScript then driverScript(nil, tick) end
+    advanceAnimations(tick)
+    clock, tick = clock + dt, dt
   end
 end
 
@@ -161,7 +223,8 @@ test("tween follows its curve and calls onComplete once", function()
   local calls = 0
   Poly(f):to({ width = 300 }, { duration = 0.25, ease = "outCubic", onComplete = function() calls = calls + 1 end })
   run(0.125, 120)
-  assert(near(f.w, 100 + 200 * 0.875, 1), f.w)
+  -- The first frame ran at the previous 60 fps.
+  assert(near(f.w, 100 + 200 * Poly.easings.outCubic((1 / 60 + 14 / 120) / 0.25), 1e-6), f.w)
   run(0.5)
   assert(f.w == 300 and calls == 1, f.w .. " " .. calls)
 end)
@@ -197,7 +260,7 @@ test("protected frame in combat: x moves through the puppet, width waits", funct
   assert(f:VisualX() == 60, "puppet did not show x: " .. f:VisualX())
   combat = false
   fire("PLAYER_REGEN_ENABLED")
-  assert(f.point[4] == 60 and f.nativeX == 0 and f:VisualX() == 60, "commit moved the frame")
+  assert(f.point[4] == 60 and f:Native() == 0 and f:VisualX() == 60, "commit moved the frame")
   run(0.5)
   assert(f.w == 160, "width not applied after combat")
 end)
@@ -216,7 +279,7 @@ test("protected frame in combat: scale draws through the puppet and hands over w
   assert(near(f:VisualX(), (10 + x) * s) and near(f:VisualY(), 20 * s), "anchor point " .. f:VisualX() .. "," .. f:VisualY())
   combat = false
   fire("PLAYER_REGEN_ENABLED")
-  assert(f.s == s and f.nativeScale == 1 and f.nativeX == 0, "not committed")
+  assert(f.s == s and select(3, f:Native()) == 1 and f:Native() == 0, "not committed")
   assert(near(f:VisualX(), (10 + x) * s) and near(f:VisualY(), 20 * s), "jump at handover")
   run(1)
   assert(f.s == 2 and f.point[4] == 40)
@@ -231,7 +294,7 @@ test("combat ending mid-animation hands over without a jump", function()
   assert(f.pointCalls == 0 and mid > 40 and mid < 70, "puppet not tracking: " .. mid)
   combat = false
   run(1 / 60)
-  assert(f.nativeX == 0 and math.abs(f:VisualX() - mid) < 2, "jump at handover")
+  assert(f:Native() == 0 and math.abs(f:VisualX() - mid) < 2, "jump at handover")
   run(1)
   assert(f.point[4] == 110)
 end)
@@ -243,6 +306,234 @@ test("x and y share one SetPoint per update, width and height one SetSize", func
   assert(f.pointCalls == 6 and f.sizeCalls == 6, f.pointCalls .. " SetPoint, " .. f.sizeCalls .. " SetSize in 6 updates")
   run(0.5)
   assert(f.point[4] == 60 and f.point[5] == 40 and f.w == 200 and f.h == 80)
+end)
+
+test("native tween: drawn by the game on the measured curve, no Lua per frame", function()
+  local f = fakeFrame()
+  f.alpha = 0
+  local m = Poly(f)
+  local done = 0
+  m:to({ alpha = 1, x = 100 }, { duration = 1, ease = "outSine", onComplete = function() done = done + 1 end })
+  assert(f.alpha == 1 and f.point[4] == 110, "final values not written first")
+  run(1 / 60)
+  assert(driverScript == nil, "driver still running for native tweens")
+  assert(Poly.stats().active == 1, "stats() does not count a natively moving frame")
+  run(0.5 - 1 / 60)
+  local want = math.sin(math.pi / 4)
+  assert(near(f:VisualAlpha(), want, 1e-3) and near(f:VisualX(), 10 + 100 * want, 0.1), f:VisualAlpha() .. " " .. f:VisualX())
+  assert(near(m:get("alpha"), f:VisualAlpha(), 1e-3) and near(m:get("x") + 10, f:VisualX(), 0.1), "get() differs from drawing")
+  run(0.6)
+  assert(done == 1 and not m:isMoving(), "not finished once")
+  assert(f:VisualAlpha() == 1 and f:VisualX() == 110 and f.pointCalls == 1, "did not land on the target")
+end)
+
+test("native and Lua tweens started together draw the same in every frame", function()
+  -- Measured in the client: a linear Lua tween drew on the same pixel as the
+  -- game's own animation started with it.
+  local native, lua = fakeFrame(), fakeFrame()
+  Poly(native):to({ x = 100 }, { duration = 1, ease = "linear" })
+  Poly(lua):to({ x = 100 }, { duration = 1, ease = function(p) return p end })
+  for _ = 1, 30 do
+    run(1 / 60)
+    assert(near(native:VisualX(), lua:VisualX(), 1e-6), native:VisualX() .. " vs " .. lua:VisualX())
+  end
+  run(1)
+end)
+
+test("a retarget keeps the value, however often and wherever in the frame it runs", function()
+  -- pr-reviewer's case: each of ten native retargets in one frame moved x.
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  local x, drawn = m:get("x"), f:VisualX()
+  assert(near(x + 10, drawn), "get " .. x .. " vs drawn " .. drawn)
+  for _ = 1, 10 do m:to({ x = 1000 }, { duration = 1, ease = "linear" }) end
+  assert(near(m:get("x"), x) and near(f:VisualX(), drawn), "retargets moved x to " .. m:get("x"))
+  run(0.25)
+  assert(near(m:get("x"), x + (1000 - x) * 0.25) and near(m:get("x") + 10, f:VisualX()), "x " .. m:get("x"))
+  run(1)
+
+  -- A retarget after the driver has moved the frame this time, from a callback.
+  local g = fakeFrame()
+  local n = Poly(g)
+  n:to({ x = 100 }, { duration = 1, ease = function(p) return p end })
+  local h = fakeFrame()
+  n:to({ alpha = 0.5 }, { duration = 0.25, ease = function(p) return p end, onComplete = function()
+    x = n:get("x")
+    n:to({ x = 0 }, { duration = 1, ease = "linear" })
+    assert(near(n:get("x"), x), "callback retarget moved x from " .. x .. " to " .. n:get("x"))
+    -- pr-reviewer's case: a track made here, retargeted at once, then stopped.
+    Poly(h):to({ x = 100 }, { duration = 1, ease = function(p) return p end })
+    Poly(h):to({ x = 1000 }, { duration = 1, ease = "linear" }):stop("x")
+    assert(Poly(h):get("x") == 0 and h:VisualX() == 10, "new track moved to " .. Poly(h):get("x"))
+  end })
+  run(0.5)
+  assert(near(n:get("x") + 10, g:VisualX()), "get " .. n:get("x") .. " vs drawn " .. g:VisualX())
+  run(1)
+end)
+
+test("native tween: retarget, stop and set continue from where it draws", function()
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  local drawn = f:VisualX()
+  m:to({ x = 0 })
+  local x, velocity = m:get("x")
+  assert(near(f:VisualX(), drawn) and near(x + 10, drawn) and near(velocity, 100, 1), "retarget jumped: " .. f:VisualX() .. " v " .. velocity)
+  run(3)
+  assert(f:VisualX() == 10 and not m:isMoving())
+
+  m:to({ x = 100, alpha = 0 }, { duration = 1, ease = "inOutSine" })
+  run(0.3)
+  drawn = f:VisualX()
+  m:stop("x")
+  assert(near(f:VisualX(), drawn) and f:Native() == 0 and not m:isMoving("x"), "stop moved the frame")
+  m:set({ alpha = 0.3 })
+  assert(f:VisualAlpha() == 0.3 and not m:isMoving(), "set did not take over the native alpha")
+end)
+
+test("native tween on a protected frame: combat midway blocks nothing, retarget goes to the puppet", function()
+  local f = fakeFrame(true)
+  local m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.3)
+  combat = true
+  run(0.2)
+  local drawn = f:VisualX()
+  assert(near(drawn, 60, 1e-6), "native move stopped in combat: " .. drawn)
+  m:to({ x = 0 }, { duration = 0.5 })
+  assert(near(f:VisualX(), drawn), "jump when the puppet took over")
+  run(1)
+  assert(f:VisualX() == 10, f:VisualX())
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  assert(f.point[4] == 10 and f:Native() == 0)
+end)
+
+test("native tween on a protected frame: scale in combat composes with the drawn position", function()
+  for _, change in ipairs({ "set", "to" }) do
+    local f = fakeFrame(true)
+    local m = Poly(f)
+    m:to({ x = 100, y = 100 }, { duration = 1, ease = "linear" })
+    run(0.5)
+    combat = true
+    if change == "set" then m:set({ scale = 2 }) else m:to({ scale = 2 }, { duration = 0.5, ease = "linear" }) end
+    run(0.25)
+    local s = m:get("scale")
+    assert(near(f:VisualX(), (10 + m:get("x")) * s, 1e-6) and near(f:VisualY(), (20 + m:get("y")) * s, 1e-6),
+      change .. ": drawn " .. f:VisualX() .. "," .. f:VisualY() .. " want " .. (10 + m:get("x")) * s .. "," .. (20 + m:get("y")) * s)
+    run(2)
+    combat = false
+    fire("PLAYER_REGEN_ENABLED")
+    assert(near(f:VisualX(), 220) and near(f:VisualY(), 240) and f.s == 2, change .. ": did not land")
+  end
+end)
+
+test("native tween handed to Lua in combat keeps its timeline", function()
+  -- Scale in combat hands x to the puppet: it continues, and ends on time.
+  local f = fakeFrame(true)
+  local m = Poly(f)
+  local done = 0
+  m:to({ x = 100, y = 100 }, { duration = 1, ease = "linear", onComplete = function() done = done + 1 end })
+  run(0.5)
+  combat = true
+  m:set({ scale = 2 })
+  local before = m:get("x")
+  run(1 / 60)
+  assert(m:get("x") > before and near(f:VisualX(), (10 + m:get("x")) * 2, 1e-6), "restarted: " .. before .. " -> " .. m:get("x"))
+  run(0.5)
+  assert(not m:isMoving() and done == 1 and near(f:VisualX(), 220), "did not end on time")
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+
+  -- Combat ending right after the handover: get() still matches the drawing.
+  f = fakeFrame(true)
+  m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  combat = true
+  m:set({ scale = 2 })
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  run(1 / 60)
+  assert(near(f:VisualX(), (10 + m:get("x")) * m:get("scale"), 1e-6), "get " .. m:get("x") .. " vs drawn " .. f:VisualX())
+
+  -- A scale change that finishes at once must not strand the handed-over tracks.
+  f = fakeFrame(true)
+  m = Poly(f)
+  done = 0
+  m:to({ x = 100, y = 100 }, { duration = 1, ease = "linear", onComplete = function() done = done + 1 end })
+  run(0.5)
+  combat = true
+  m:to({ scale = 2 }, { duration = 0 })
+  run(2)
+  assert(not m:isMoving() and done == 1 and m:get("x") == 100 and m:get("y") == 100, "stranded at " .. m:get("x"))
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+end)
+
+test("native tween handed to the puppet mid-update moves one frame's worth, not two", function()
+  for _, other in ipairs({ { y = 2 }, { scale = 2 } }) do
+    run(0.1, 10) -- every frame from the start lasts 0.1 s
+    local f = fakeFrame(true)
+    local m = Poly(f)
+    m:to({ x = 100 }, { duration = 1, ease = "linear" })
+    m:to(other, { duration = 2, ease = "outCubic" })
+    run(0.5, 10)
+    combat = true
+    run(0.1, 10)
+    assert(near(m:get("x"), 60, 1e-6), "x " .. m:get("x") .. " at t = 0.6")
+    run(0.3, 10)
+    assert(near(m:get("x"), 90, 1e-6), "x " .. m:get("x") .. " at t = 0.9")
+    combat = false
+    fire("PLAYER_REGEN_ENABLED")
+    run(2)
+  end
+end)
+
+test("native tween handed to Lua: a delay waits and velocity carries over", function()
+  -- A delayed retarget starts moving only once its delay is over.
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  m:to({ x = 0 }, { duration = 1, ease = "outCubic", delay = 0.5 })
+  local held = m:get("x")
+  run(0.5)
+  assert(near(m:get("x"), held, 1e-6), "moved during its delay: " .. held .. " -> " .. m:get("x"))
+  run(0.1)
+  -- outCubic 50 -> 0, about 0.08 s in: near 39.
+  assert(m:get("x") > 35 and m:get("x") < 45, "x " .. m:get("x") .. " 0.1 s after the delay")
+
+  -- A handover in combat keeps the tween's velocity for a spring retarget.
+  f = fakeFrame(true)
+  m = Poly(f)
+  m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  combat = true
+  m:to({ scale = 2 }, { duration = 0.5 })
+  run(1 / 60)
+  local _, velocity = m:get("x")
+  assert(near(velocity, 100, 1e-6), "velocity " .. velocity .. " after the handover")
+  combat = false
+  fire("PLAYER_REGEN_ENABLED")
+  run(2)
+end)
+
+test("native tween: alpha outside 0..1 stays in Lua, so stopping does not jump", function()
+  local f = fakeFrame()
+  f.alpha = 0
+  local m = Poly(f)
+  m:to({ alpha = 1 }, { spring = "wobbly" })
+  run(0.3)
+  assert(m:get("alpha") > 1, "spring did not overshoot")
+  m:to({ alpha = 0 }, { duration = 1, ease = "linear" })
+  run(0.1)
+  local drawn = f:VisualAlpha()
+  m:stop("alpha")
+  assert(f:VisualAlpha() == drawn, "stop jumped from " .. drawn .. " to " .. f:VisualAlpha())
 end)
 
 test("onComplete can start the next animation", function()
@@ -463,8 +754,9 @@ test("random show/hide sequences end where the last calls say", function()
     return n and state % n + 1 or state / 2147483647
   end
   local function value(name) local r = RANGE[name]; return r[1] + (r[2] - r[1]) * rand() end
+  local EASES = { "outCubic", "linear", "outSine", "inOutSine" } -- the last three run natively
   local function opts()
-    if rand(2) == 1 then return { duration = 0.05 + 0.4 * rand() } end
+    if rand(2) == 1 then return { duration = 0.05 + 0.4 * rand(), ease = EASES[rand(#EASES)] } end
     return { spring = rand(2) == 1 and "stiff" or "gentle" }
   end
 
@@ -541,6 +833,8 @@ test("random show/hide sequences end where the last calls say", function()
     end
     if f.shown ~= (lastVis ~= "hide") then fail("shown is " .. tostring(f.shown) .. " after a last " .. tostring(lastVis)) end
     if m:isMoving() then fail("still moving") end
+    local nx, ny, k, _, nativeAlpha = f:Native()
+    if nx ~= 0 or ny ~= 0 or k ~= 1 or nativeAlpha then fail("a native animation is still drawing") end
     for _, name in ipairs(NAMES) do
       local o = owner[name]
       local want = type(o) == "table" and o[1] or REST[name]

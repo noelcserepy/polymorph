@@ -11,6 +11,8 @@ local calls = {}
 local path = assert(arg[1], "path to Polymorph.lua")
 local driverScript
 local counting = true
+local clock = 0
+_G.GetTime = function() return clock end
 _G.InCombatLockdown = function()
   if counting then calls.InCombatLockdown = (calls.InCombatLockdown or 0) + 1 end
   return false
@@ -40,24 +42,25 @@ end
 local function instrument(frames, on)
   for _, f in ipairs(frames) do getmetatable(f).__index = on and counted or plain end
 end
+local FPS = tonumber(arg[2]) or 120
+local DT = 1 / FPS
+_G.GetTickTime = function() return DT end
 local ns = { dev = true }
 assert(loadfile(path))("Polymorph", ns)
 local Poly = ns.Polymorph
 
-local FPS = tonumber(arg[2]) or 120
-local DT = 1 / FPS
 -- Steps the driver `n` times. Returns Lua µs per track per update, timed with
 -- uncounted calls, then game calls and their priced µs per track per update.
 local function measure(n, tracks)
   counting = false
   local start = os.clock()
-  for _ = 1, n do if driverScript then driverScript(nil, DT) end end
+  for _ = 1, n do clock = clock + DT; if driverScript then driverScript(nil, DT) end end
   return (os.clock() - start) * 1e6 / (n * tracks)
 end
 local function countCalls(n, tracks)
   for k in pairs(calls) do calls[k] = nil end
   counting = true
-  for _ = 1, n do if driverScript then driverScript(nil, DT) end end
+  for _ = 1, n do clock = clock + DT; if driverScript then driverScript(nil, DT) end end
   local total, priced = 0, 0
   for k, c in pairs(calls) do total = total + c; priced = priced + c * assert(COST[k], k) end
   return total / (n * tracks), priced / (n * tracks)
@@ -107,5 +110,5 @@ for _, sc in ipairs(scenarios) do
   assertMoving(frames, sc[2])
   print(("%-36s %9.3f %7.2f %13.2f"):format(sc[1], lua, perTrack, lua + priced))
   for _, f in ipairs(frames) do Poly(f):stop() end
-  for _ = 1, 3 do if driverScript then driverScript(nil, DT) end end
+  for _ = 1, 3 do clock = clock + DT; if driverScript then driverScript(nil, DT) end end
 end

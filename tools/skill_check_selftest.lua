@@ -79,6 +79,8 @@ local cases = {
   { "rows blink late in the fade", "row 1 dimmed", { 'duration = 0.3, delay = (i - 1) * 0.05 })', 'duration = 0.3, delay = (i - 1) * 0.05 }); C_Timer.After((i - 1) * 0.05 + 0.29, function() row:Hide() end); C_Timer.After((i - 1) * 0.05 + 0.31, function() row:Show() end)' } },
   { "rows blink after the list finishes", "row 1 dimmed after fading in", { 'duration = 0.3, delay = (i - 1) * 0.05 })', 'duration = 0.3, delay = (i - 1) * 0.05 }); C_Timer.After(0.8, function() row:GetParent():Hide() end); C_Timer.After(1.0, function() row:GetParent():Show() end)' } },
   { "rows stop at half", "row 1 not fully visible at the end", { 'Poly(row):set({ alpha = 0 }):to({ alpha = 1 }', 'Poly(row):set({ alpha = 0 }):to({ alpha = 0.5 }' } },
+  { "native eases: outSine rows, linear secure fade", true, { 'duration = 0.3, delay = (i - 1) * 0.05', 'duration = 0.3, ease = "outSine", delay = (i - 1) * 0.05', 'Poly(panel):hide("fade", { duration = 0.2 })', 'Poly(panel):hide("fade", { duration = 0.2, ease = "linear" })' } },
+  { "native eases: toggle and toast", true, { 'Poly(panel):hide("pop", { duration = 0.15, ease = "inQuad" })', 'Poly(panel):hide("fade", { duration = 0.15, ease = "inSine" })', 'Poly(toast):hide("above")', 'Poly(toast):hide("above", { duration = 0.3, ease = "inOutSine" })' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
 }
 

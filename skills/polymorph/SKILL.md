@@ -44,7 +44,7 @@ Each rule prevents a bug that is easy to write and hard to see.
 1. **Anchor first.** `x` and `y` are offsets from the frame's first anchor as it was when `Poly(frame)` first ran. Call `SetPoint` before the first `Poly(frame)`, then move the frame only through Polymorph. A later `SetPoint` of your own is overwritten the next time Polymorph moves `x` or `y`.
 2. **One writer per property.** While Polymorph animates `alpha`, `x`, `y`, `width`, `height` or `scale`, change that property through `m:to()` or `m:set()`, never with `SetAlpha`, `SetPoint`, `SetSize` or `SetScale`. `m:set()` jumps there and stops the animation.
 3. **`show()` and `hide()` instead of `Show()` and `Hide()`** for any frame that should animate in or out. `hide()` animates, then calls `Hide()` and resets the frame to rest while hidden, so a later plain `Show()` still looks right. `show()` during a running `hide()` turns the frame around. `show()` comes in from `away` only when the frame is hidden. On a shown frame it just returns the `away` properties to rest. A new frame from `CreateFrame` is shown, so call its `Hide()` once at creation.
-4. **Read through Polymorph.** `m:get("x")` returns the drawn value. `GetPoint()`, `GetLeft()` and `GetScale()` miss the native animations Polymorph uses in combat.
+4. **Read through Polymorph.** `m:get("x")` returns the drawn value. `GetPoint()`, `GetLeft()`, `GetScale()` and `GetAlpha()` miss the game's own animations, which Polymorph uses in combat and for native tweens. During a native tween they already return the final value.
 5. **Scale grows around the anchor point and scales the anchor offset.** To grow a button around its center, anchor it by `"CENTER"` at offset 0 inside a holder frame, position the holder, and animate the button's `scale`.
 6. **Protected frames in combat.** The game blocks `SetPoint`, `SetSize`, `Show` and `Hide` on protected frames during combat lockdown, and calling one shows the player an error. Polymorph never makes those calls while a frame is locked:
    - `alpha`, `x`, `y` and `scale` keep animating,
@@ -77,11 +77,13 @@ Properties: `alpha`, `x`, `y`, `width`, `height`, `scale`. Unknown names raise a
 | --- | --- | --- |
 | `spring` | `"default"` | `default`, `gentle`, `wobbly`, `stiff`, `slow`, `molasses`, or `{ stiffness, damping, mass }`. |
 | `duration` | none | Seconds. Setting it makes a tween instead of a spring. |
-| `ease` | `"outCubic"` | `linear`, `inQuad`, `outQuad`, `inOutQuad`, `outCubic`, `inOutCubic`, `ease`, `easeOut`, `easeInOut`, a cubic-bezier `{ x1, y1, x2, y2 }`, or a function from 0..1 to 0..1. |
+| `ease` | `"outCubic"` | `linear`, `inSine`, `outSine`, `inOutSine`, `inQuad`, `outQuad`, `inOutQuad`, `outCubic`, `inOutCubic`, `ease`, `easeOut`, `easeInOut`, a cubic-bezier `{ x1, y1, x2, y2 }`, or a function from 0..1 to 0..1. |
 | `delay` | 0 | Seconds before these properties start. |
 | `onComplete` | none | `onComplete(frame)`, see rule 7. |
 
 `away` is a preset or a table of values, and describes the frame while it is hidden. Every preset sets `alpha = 0`, and some move too: `fade` (only alpha), `pop` (`scale = 0.92`), `below` (`y = -16`), `above` (`y = 16`), `left` (`x = -16`) and `right` (`x = 16`). The default is `fade`. Add your own to `Poly.presets`.
+
+**Native tweens.** A tween of `alpha`, `x` or `y` with `linear`, `inSine`, `outSine` or `inOutSine` runs as the game's own animation, with no Lua per frame. Prefer these eases when many frames fade or slide at once. Springs and the other eases run in Lua.
 
 Rest values are recorded on first touch: alpha, scale, width and height as they are, `x = 0`, `y = 0`. A frame first touched at alpha 0 rests at alpha 1.
 
