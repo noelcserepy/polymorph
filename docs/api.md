@@ -5,6 +5,8 @@ local Poly = LibStub("Polymorph-1.0")
 local m = Poly(frame)   -- the frame's motion handle, created on first use
 ```
 
+`frame` can be a frame, a texture or a font string. See [Textures and font strings](#textures-and-font-strings).
+
 `Poly(frame)` always returns the same handle for the same frame. Every method below returns the handle, so calls chain:
 
 ```lua
@@ -26,7 +28,7 @@ Poly(f):set({ alpha = 0 }):to({ alpha = 1 })
 
 A property is finished when it's within its precision of the target. For springs, its speed must also be below 10x the precision per second. It then snaps exactly to the target.
 
-Unknown property names raise an error.
+Unknown property names raise an error. To animate anything else, such as a color, a number or how much text shows, define your own values with [`m:define()`](#mdefinevalues-write).
 
 ## `m:to(targets, opts)`
 
@@ -65,6 +67,94 @@ Returns `value, velocity, target`. `target` is nil when the property isn't movin
 ## `m:isMoving(name)`
 
 True while the property is animating, or with no `name`, while any property is.
+
+## `m:define(values, write)`
+
+Adds your own values to this handle. Each name in `values` becomes a property that `to()`, `set()`, `stop()`, `get()`, `show()` and `hide()` take like the built-in ones. It starts at the number given. Springs, tweens, retargeting, `delay` and `onComplete` all work the same.
+
+```lua
+Poly(fs):define({ total = 0 }, function(fs, v) fs:SetText(("%.0f"):format(v.total)) end)
+Poly(fs):to({ total = 1500 })
+```
+
+- **One writer call per update.** Polymorph keeps the current values in one table. In every update where any of them moved, it calls `write(frame, current)` once, so several values that belong together, such as `r`, `g` and `b`, reach the game in one call. `current` is the same table every time. Read it, and don't keep or change it.
+- **Names belong to the handle.** A name means something only on the handle you defined it on, so two addons can't collide through a shared list. A built-in name raises an error. Defining a name again replaces its writer and keeps its current value.
+- **Rest values.** For `show()` and `hide()`, a defined value rests at the number it was first defined with. `m:restAt()` changes it.
+- **Precision.** A defined value is finished within 0.001 of its target.
+- **Always Lua.** Defined values never run as native animations.
+- **Combat.** Polymorph calls `write` in combat too, and never waits for combat to end. So a writer must call only what the game allows on a protected frame in combat. Never call `SetPoint`, `SetSize`, `SetWidth`, `SetHeight`, `SetScale`, `Show` or `Hide` from it. Animate position, size and scale with the built-in properties, which handle combat. Blizzard's API documentation marks those layout calls as protected, and doesn't mark `SetText`, `SetVertexColor`, `SetTextColor` or `SetAlphaGradient`. Those four haven't been measured in combat yet.
+- **No animation calls inside `write`.** It runs inside the driver's update. Start the next animation from `onComplete` instead.
+- **Numbers above 2^31.** WoW's `string.format("%d")` errors above 2^31. Format with `"%.0f"`.
+
+`define()` returns the handle. Call it once, where you create the frame.
+
+### Examples
+
+Each example runs in the offline tests, `tests/core_test.lua`, against the fake client.
+
+**Number counter.** A total that rolls to each new value. Every hit retargets the spring, which keeps its speed, so a burst of hits never makes the number stall or jump. The default spring's damping ratio is 0.997, so it overshoots by less than 10^-17 of the distance, and the number never passes the total. `wobbly`, `stiff` and `gentle` overshoot, and the number would roll back.
+
+```lua
+local Poly = LibStub("Polymorph-1.0")
+
+-- Returns add(amount). Call it on every hit, as often as hits come.
+local function NumberCounter(fs)
+  local m = Poly(fs):define({ total = 0 }, function(text, v)
+    text:SetText(("%.0f"):format(v.total)) -- "%.0f", since "%d" errors above 2^31
+  end)
+  m:set({ total = 0 })
+  local total = 0
+  return function(amount)
+    total = total + amount
+    m:to({ total = total })
+  end
+end
+```
+
+**Typewriter.** Reveals a font string's text from the left. It uses `FontString:SetAlphaGradient(start, length)`, the call Blizzard's quest frame uses to type out quest text: everything before `start` shows, and the next `length` fade out. Because the whole text is set at once, lines wrap where they finally will, and words never jump to the next line as they grow. Slicing the string instead would reflow on every step and needs care with UTF-8 and color codes.
+
+```lua
+local Poly = LibStub("Polymorph-1.0")
+
+-- Returns typeText(text), which reveals `speed` characters per second. A new text starts over.
+local function Typewriter(fs, speed)
+  local m = Poly(fs):define({ shown = 0 }, function(text, v)
+    text:SetAlphaGradient(v.shown, 4)
+  end)
+  return function(text)
+    fs:SetText(text)
+    local length = select(2, text:gsub("[^\128-\191]", "")) -- characters, not bytes
+    m:set({ shown = 0 }):to({ shown = length }, {
+      duration = length / speed, ease = "linear",
+      onComplete = function() fs:ClearAlphaGradient() end,
+    })
+  end
+end
+```
+
+Blizzard's quest frame names its speed in characters per second. Whether `start` counts characters or pixels in this client isn't measured yet. Either way, the reveal ends with the whole text showing, because `onComplete` clears the gradient. Color codes such as `|cff...|r` count as characters here, so text with them takes a little longer.
+
+**Color fade.** Three values, one writer: `r`, `g` and `b` move on their own tracks, so a retarget mid-fade turns smoothly toward the new color, and the texture gets one `SetVertexColor` per update.
+
+```lua
+local Poly = LibStub("Polymorph-1.0")
+
+-- Returns tint(r, g, b, opts), which fades from the color the texture shows now.
+local function ColorFade(tex)
+  local r, g, b = tex:GetVertexColor()
+  local m = Poly(tex):define({ r = r, g = g, b = b }, function(t, c)
+    t:SetVertexColor(c.r, c.g, c.b)
+  end)
+  return function(red, green, blue, opts)
+    m:to({ r = red, g = green, b = blue }, opts)
+  end
+end
+
+-- local tint = ColorFade(icon)
+-- tint(1, 0.2, 0.2, { duration = 0.3, ease = "outSine" })
+```
+
+For a font string, read `GetTextColor` and write `SetTextColor`. Polymorph has no built-in color property. A texture, a font string and a status bar each take color through a different call, and this example fits any of them by swapping the two calls.
 
 ## `m:show(away, opts)` and `m:hide(away, opts)`
 
@@ -130,6 +220,14 @@ Each is a function from progress to eased progress. Add your own to the table.
 Springs integrate in fixed steps of 1/120 s. Frame time is clamped to 0.1 s, so a long hitch doesn't make the spring jump.
 
 Unknown easing, spring and preset names raise an error.
+
+## Textures and font strings
+
+`Poly(texture)` and `Poly(fontString)` work like `Poly(frame)`, with the same properties. Blizzard's API documentation lists every method Polymorph calls on them: `GetAlpha`, `SetAlpha`, `GetScale`, `SetScale`, `GetWidth`, `SetSize`, `GetPoint`, `SetPoint`, `IsShown`, `Show`, `Hide`, `IsProtected` and `CreateAnimationGroup`.
+
+A texture or font string counts as locked in combat when it or its parent frame is protected. So on a protected button in combat, its icon follows the rules in [Combat](#combat): `alpha` animates, `x`, `y` and `scale` draw through native animations, and `width`, `height`, `show()` and `Hide()` wait for combat to end. Whether the game needs that much care for regions isn't measured yet, so Polymorph takes the strict reading.
+
+Not yet measured in the client: native animations on textures and font strings, and how combat lockdown treats them. Blizzard's own UI plays Alpha and Translation animations on textures.
 
 ## Combat
 

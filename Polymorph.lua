@@ -3,6 +3,10 @@
 --   local Poly = LibStub("Polymorph-1.0")
 --   Poly(frame):to({ alpha = 1, y = 20 })                     -- spring (default)
 --   Poly(frame):to({ width = 300 }, { duration = 0.25, ease = "outCubic" })
+--   Poly(fs):define({ total = 0 }, function(fs, v) fs:SetText(("%.0f"):format(v.total)) end)
+--   Poly(fs):to({ total = 1500 })                             -- your own values
+--
+-- frame can be a frame, a texture or a font string.
 --
 -- Calling :to() again while a property is moving retargets it from its current
 -- value. A spring keeps its velocity across the retarget.
@@ -280,6 +284,12 @@ local PROPS = {
 }
 Poly.properties = PROPS
 
+-- Built-in properties, then the handle's own values from define(). define()
+-- refuses built-in names, so a name means one thing on each handle.
+local function propOf(m, name)
+  return PROPS[name] or m.props and m.props[name]
+end
+
 -- Restricted properties without a native path wait for combat to end.
 local function waitsWhileLocked(prop)
   return prop.restricted and not prop.native
@@ -300,8 +310,19 @@ driver:SetScript("OnUpdate", nil)
 local profile = debugprofilestop
 local STEP = 1 / 120
 
+-- A texture or font string belongs to a frame. Whether the game blocks a
+-- region's writers by the region's own IsProtected() is unmeasured, so a region
+-- also counts as protected when its parent frame is.
+local function isProtected(m)
+  local f = m.frame
+  if f:IsProtected() then return true end
+  if m.isRegion == nil then m.isRegion = not f:IsObjectType("Frame") end
+  local parent = m.isRegion and f:GetParent()
+  return parent and parent:IsProtected() or false
+end
+
 local function locked(m)
-  return InCombatLockdown() and m.frame:IsProtected()
+  return InCombatLockdown() and isProtected(m)
 end
 
 -- Semi-implicit Euler in steps of at most STEP. t.k and t.c are stiffness and
@@ -352,6 +373,9 @@ end
 
 local queueNative -- defined with the other native tween code below
 
+-- The writers one frame staged in this update. Reused, so stepping allocates nothing.
+local flushes = {}
+
 local function update()
   local started = profile()
   -- Each Lua track moves by the time since it last moved, so a track that
@@ -362,15 +386,15 @@ local function update()
   local inCombat = InCombatLockdown()
   for m in pairs(active) do
     -- Checked every frame: combat can start in the middle of an animation.
-    local isLocked = inCombat and m.frame:IsProtected() or false
+    local isLocked = inCombat and isProtected(m) or false
     m.isLocked = isLocked
-    -- Properties that share a game call (x and y, width and height) stage
-    -- their values, and each call runs once after the loop.
-    local flush1, flush2
+    -- Properties that share a writer (x and y, width and height, the values of
+    -- one define()) stage their values, and each writer runs once after the loop.
+    local flushCount = 0
     local stepped = false
     for name, t in pairs(m.tracks) do
       tracks = tracks + 1
-      local prop = PROPS[name]
+      local prop = t.prop
       -- A native track is drawn by the game, and its OnFinished arrives it. A
       -- queued track holds still until the start timer runs.
       if not (t.native or t.queued) then
@@ -387,9 +411,11 @@ local function update()
           if rest then t.value = t.target end
           local staged = prop.staged
           if staged then
-            m[staged] = t.value
-            local flush = prop.flush
-            if not flush1 or flush1 == flush then flush1 = flush else flush2 = flush end
+            local into = prop.values or m
+            into[staged] = t.value
+            local flush, i = prop.flush, 1
+            while i <= flushCount and flushes[i] ~= flush do i = i + 1 end
+            if i > flushCount then flushCount = i; flushes[i] = flush end
           else
             prop.write(m, t.value)
           end
@@ -397,8 +423,11 @@ local function update()
         end
       end
     end
-    if flush1 then flush1(m) end
-    if flush2 then flush2(m) end
+    for i = 1, flushCount do
+      local flush = flushes[i]
+      flushes[i] = nil
+      flush(m)
+    end
     -- Native and queued tracks need no driver, so a frame with only those goes
     -- idle. A track can be queued during the loop, and a Lua track can arrive,
     -- so look again.
@@ -479,7 +508,7 @@ end
 -- the group's channel when the tween may start natively.
 local function nativeChannelFor(m, name, t, isLocked)
   if t.native or t.spring or t.elapsed ~= 0 or t.delay > 0 or isLocked or t.duration <= 0
-      or not PROPS[name].tween or not NATIVE_SMOOTHING[t.ease] then
+      or not t.prop.tween or not NATIVE_SMOOTHING[t.ease] then
     return nil
   end
   if name == "alpha" and not (t.value >= 0 and t.value <= 1 and t.target >= 0 and t.target <= 1) then
@@ -659,13 +688,13 @@ local function animate(m, targets, opts, owner)
     if pending == 0 and not lost and opts.onComplete then opts.onComplete(m.frame) end
   end
   for name, target in pairs(targets) do
-    local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 3)
+    local prop = propOf(m, name) or error("Polymorph: unknown property " .. tostring(name), 3)
     local t = m.tracks[name]
     if t then
       takeOver(m, name)
       if t.native then freezeNative(m, name, t) end
     else
-      t = { value = prop.read(m), velocity = 0, time = trackTime() }
+      t = { prop = prop, value = prop.read(m), velocity = 0, time = trackTime() }
       m.tracks[name] = t
     end
     t.target = target
@@ -705,7 +734,7 @@ end
 function Motion:set(values)
   self.isLocked = locked(self)
   for name, value in pairs(values) do
-    local prop = PROPS[name] or error("Polymorph: unknown property " .. tostring(name), 2)
+    local prop = propOf(self, name) or error("Polymorph: unknown property " .. tostring(name), 2)
     takeOver(self, name)
     local t = self.tracks[name]
     if t and t.native then t.native.ag:Stop() end
@@ -746,7 +775,33 @@ function Motion:get(name)
     return value, velocity, t.target
   end
   if t then return t.value, t.velocity, t.target end
-  return PROPS[name].read(self), 0, nil
+  return propOf(self, name).read(self), 0, nil
+end
+
+-- Makes each name in `values` a property of this handle, starting at its
+-- value there. Polymorph keeps the current values in one table and, in every
+-- update where any of them moved, calls write(frame, current) once. Defining a
+-- name again replaces its writer and keeps its value.
+function Motion:define(values, write)
+  local current, frame = {}, self.frame
+  local function flush() write(frame, current) end
+  self.props = self.props or {}
+  for name, value in pairs(values) do
+    if PROPS[name] then error("Polymorph: " .. name .. " is a built-in property", 2) end
+    if type(value) ~= "number" then error("Polymorph: " .. tostring(name) .. " must start at a number", 2) end
+    local old = self.props[name]
+    current[name] = old and old.read(self) or value
+    local prop = {
+      precision = 0.001, staged = name, values = current, flush = flush,
+      read = function() return current[name] end,
+      write = function(_, v) current[name] = v; flush() end,
+    }
+    self.props[name] = prop
+    local t = self.tracks[name]
+    if t then t.prop = prop end
+    if self.rest[name] == nil then self.rest[name] = value end
+  end
+  return self
 end
 
 function Motion:isMoving(name)
@@ -857,7 +912,7 @@ function Motion:hide(away, opts)
   if locked(self) then
     targets = {}
     for name, value in pairs(away) do
-      if not waitsWhileLocked(PROPS[name]) then targets[name] = value end
+      if not waitsWhileLocked(propOf(self, name)) then targets[name] = value end
     end
     if next(targets) == nil then finish() return self end
   end
