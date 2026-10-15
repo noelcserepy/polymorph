@@ -45,7 +45,10 @@
 -- Stop() removes the displacement: native_puppet.lua, 2026-10-14
 -- Stopping a paused Translation and calling SetPoint() at the same offset lands on the same pixel: native_probe.lua, 2026-10-14
 -- Stop() does not fire OnFinished: unmeasured
--- A finished group stops drawing, so the frame draws its own values again: unmeasured
+-- SetPoint(final) then Play(true) from the start offset draws the start in the group's first frame:
+--   CONTRADICTED from OnUpdate, native_order.lua, 2026-10-15 (recorded at 120 fps: 3 of 8 starts drew the
+--   offset against the old anchor for 1-2 frames). From a C_Timer callback: 0 of 32. The fake draws it right.
+-- A finished group stops drawing, so the frame draws its own values again: native_order.lua, 2026-10-15 (SetPoint in OnFinished, no snap in 32 recorded finishes)
 -- A group finishes when its longest animation ends: unmeasured
 -- IsPlaying() is true while paused, and false after Stop() or finishing: unmeasured (the library does not call it)
 -- Anchor offsets are in the frame's own scaled units: scale_units.lua, 2026-10-14
