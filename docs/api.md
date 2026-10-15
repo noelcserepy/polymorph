@@ -146,7 +146,7 @@ During combat lockdown, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide`
 
 `GetPoint()`, `GetLeft()` and `GetScale()` don't include native animations. While locked, read with `m:get("x")` or `m:get("scale")`.
 
-The `alpha`, `x`, `y` and `hide()` rows were tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions. The `scale` row was measured out of combat only: how the native Scale and Translation combine, and that `SetScaleTo` changes a paused Scale live. Its test in real combat is still to come.
+Every row except `set()` was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions. For `scale`, the test covered combat starting and ending in the middle of an `x` and `scale` tween, and a `scale` spring followed by `hide("pop")` in combat.
 
 ## Performance and limits
 
