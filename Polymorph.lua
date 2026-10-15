@@ -27,8 +27,13 @@ else
   if not Poly then return end -- an equal or newer copy is already loaded
 end
 
-local InCombatLockdown, GetTime = InCombatLockdown, GetTime
+local InCombatLockdown, GetTime, GetTickTime = InCombatLockdown, GetTime, GetTickTime
 local abs, min, max = math.abs, math.min, math.max
+
+-- The game counts an animation started during a frame from the frame before:
+-- it draws the animation one frame in already. Lua tracks and native tweens
+-- start from the same time, so both draw the same value in every frame.
+local function frameStart() return GetTime() - GetTickTime() end
 
 ---------------------------------------------------------------------------
 -- Easing
@@ -490,7 +495,7 @@ function tryNative(m, name, t, isLocked)
     commit(m)
     ch.ag:Play(true)
   end
-  t.native, t.startedAt = ch, GetTime()
+  t.native, t.startedAt = ch, frameStart()
   return true
 end
 
@@ -600,7 +605,7 @@ local function animate(m, targets, opts, owner)
       takeOver(m, name)
       if t.native then freezeNative(m, name, t) end
     else
-      t = { value = prop.read(m), velocity = 0, time = GetTime() }
+      t = { value = prop.read(m), velocity = 0, time = frameStart() }
       m.tracks[name] = t
     end
     t.target = target

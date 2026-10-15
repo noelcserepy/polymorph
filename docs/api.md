@@ -171,7 +171,14 @@ The game then draws the whole tween, and Polymorph runs no Lua for it until it e
 
 Springs, the other easings, `scale`, `width` and `height` always run in Lua. So does an `alpha` tween that starts or ends outside 0..1, so that it follows exactly the curve it would in Lua. When combat lockdown makes Polymorph draw a frame's position through its combat animation, a native `x` or `y` tween on that frame continues in Lua from where it draws.
 
-Measured in the client: the four curves, reverse playback, and that getters ignore native animations. Not measured yet: whether a native Alpha replaces the frame's own alpha or multiplies it, and whether Translations in separate groups add up. Both are assumed here.
+Measured in the client:
+- the four curves and reverse playback,
+- that getters ignore native animations,
+- that a native Alpha replaces the frame's own alpha instead of multiplying it,
+- that Translations in separate groups add up,
+- that a native tween, a Lua tween and the game's own Translation, started together, draw on the same pixel.
+
+With 300 frames tweening `x` at once, the driver used 0.73 ms of Lua per frame when the tweens ran in Lua. Native, it ran once, for 0.19 ms, when the tweens started.
 
 `Poly.stats()` returns:
 - `frames`: driver updates counted,

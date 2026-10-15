@@ -7,8 +7,9 @@ local driverScript
 local eventHandlers = {}
 _G.InCombatLockdown = function() return combat end
 _G.debugprofilestop = function() return os.clock() * 1000 end
-local clock = 0
+local clock, tick = 0, 1 / 60
 _G.GetTime = function() return clock end
+_G.GetTickTime = function() return tick end
 _G.CreateFrame = function()
   local f = {}
   function f:SetScript(name, fn)
@@ -99,8 +100,9 @@ local function fakeFrame(protected)
       ag.anims[#ag.anims + 1] = a
       return a
     end
+    -- A group played during a frame has already run that frame, as measured.
     function ag:Play(reverse)
-      self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
+      self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, tick
       for _, a in ipairs(self.anims) do a.forced = nil end
     end
     function ag:Pause() self.paused = true end
@@ -188,7 +190,7 @@ local Poly = ns.Polymorph
 local function run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
-    clock = clock + dt
+    clock, tick = clock + dt, dt
     advanceAnimations(dt)
     if driverScript then driverScript(nil, dt) end
   end
@@ -217,8 +219,10 @@ test("tween follows its curve and calls onComplete once", function()
   local f = fakeFrame()
   local calls = 0
   Poly(f):to({ width = 300 }, { duration = 0.25, ease = "outCubic", onComplete = function() calls = calls + 1 end })
+  -- Like the game's animations, a tween counts the frame it started in.
+  local p = (0.125 + GetTickTime()) / 0.25
   run(0.125, 120)
-  assert(near(f.w, 100 + 200 * 0.875, 1), f.w)
+  assert(near(f.w, 100 + 200 * Poly.easings.outCubic(p), 0.01), f.w)
   run(0.5)
   assert(f.w == 300 and calls == 1, f.w .. " " .. calls)
 end)
@@ -308,17 +312,31 @@ test("native tween: drawn by the game on the measured curve, no Lua per frame", 
   local m = Poly(f)
   local done = 0
   m:to({ alpha = 1, x = 100 }, { duration = 1, ease = "outSine", onComplete = function() done = done + 1 end })
+  local started = GetTickTime() -- it counts the frame it started in
   assert(f.alpha == 1 and f.point[4] == 110, "final values not written first")
   run(1 / 60)
   assert(driverScript == nil, "driver still running for native tweens")
   assert(Poly.stats().active == 1, "stats() does not count a natively moving frame")
   run(0.5 - 1 / 60)
-  local want = math.sin(math.pi / 4)
+  local want = math.sin((0.5 + started) * math.pi / 2)
   assert(near(f:VisualAlpha(), want, 1e-3) and near(f:VisualX(), 10 + 100 * want, 0.1), f:VisualAlpha() .. " " .. f:VisualX())
   assert(near(m:get("alpha"), f:VisualAlpha(), 1e-3) and near(m:get("x") + 10, f:VisualX(), 0.1), "get() differs from drawing")
   run(0.6)
   assert(done == 1 and not m:isMoving(), "not finished once")
   assert(f:VisualAlpha() == 1 and f:VisualX() == 110 and f.pointCalls == 1, "did not land on the target")
+end)
+
+test("native and Lua tweens started together draw the same in every frame", function()
+  -- Measured in the client: a linear Lua tween drew on the same pixel as the
+  -- game's own animation started with it.
+  local native, lua = fakeFrame(), fakeFrame()
+  Poly(native):to({ x = 100 }, { duration = 1, ease = "linear" })
+  Poly(lua):to({ x = 100 }, { duration = 1, ease = function(p) return p end })
+  for _ = 1, 30 do
+    run(1 / 60)
+    assert(near(native:VisualX(), lua:VisualX(), 1e-6), native:VisualX() .. " vs " .. lua:VisualX())
+  end
+  run(1)
 end)
 
 test("native tween: retarget, stop and set continue from where it draws", function()
@@ -346,11 +364,12 @@ test("native tween on a protected frame: combat midway blocks nothing, retarget 
   local f = fakeFrame(true)
   local m = Poly(f)
   m:to({ x = 100 }, { duration = 1, ease = "linear" })
+  local started = GetTickTime()
   run(0.3)
   combat = true
   run(0.2)
   local drawn = f:VisualX()
-  assert(near(drawn, 60, 1), "native move stopped in combat: " .. drawn)
+  assert(near(drawn, 10 + 100 * (0.5 + started)), "native move stopped in combat: " .. drawn)
   m:to({ x = 0 }, { duration = 0.5 })
   assert(near(f:VisualX(), drawn), "jump when the puppet took over")
   run(1)
@@ -428,12 +447,13 @@ test("native tween handed to the puppet mid-update moves one frame's worth, not 
     local m = Poly(f)
     m:to({ x = 100 }, { duration = 1, ease = "linear" })
     m:to(other, { duration = 2, ease = "outCubic" })
+    local started = GetTickTime()
     run(0.5, 10)
     combat = true
     run(0.1, 10)
-    assert(near(m:get("x"), 60, 1e-6), "x " .. m:get("x") .. " at t = 0.6")
+    assert(near(m:get("x"), 100 * (0.6 + started), 1e-6), "x " .. m:get("x") .. " at t = 0.6")
     run(0.3, 10)
-    assert(near(m:get("x"), 90, 1e-6), "x " .. m:get("x") .. " at t = 0.9")
+    assert(near(m:get("x"), 100 * (0.9 + started), 1e-6), "x " .. m:get("x") .. " at t = 0.9")
     combat = false
     fire("PLAYER_REGEN_ENABLED")
     run(2)
@@ -447,8 +467,9 @@ test("native tween handed to Lua: a delay waits and velocity carries over", func
   m:to({ x = 100 }, { duration = 1, ease = "linear" })
   run(0.5)
   m:to({ x = 0 }, { duration = 1, ease = "outCubic", delay = 0.5 })
+  local held = m:get("x")
   run(0.5)
-  assert(near(m:get("x"), 50, 1e-6), "moved during its delay: " .. m:get("x"))
+  assert(near(m:get("x"), held, 1e-6), "moved during its delay: " .. held .. " -> " .. m:get("x"))
   run(0.1)
   -- outCubic 50 -> 0, about 0.08 s in: near 39.
   assert(m:get("x") > 35 and m:get("x") < 45, "x " .. m:get("x") .. " 0.1 s after the delay")

@@ -42,12 +42,13 @@ end
 local function instrument(frames, on)
   for _, f in ipairs(frames) do getmetatable(f).__index = on and counted or plain end
 end
+local FPS = tonumber(arg[2]) or 120
+local DT = 1 / FPS
+_G.GetTickTime = function() return DT end
 local ns = { dev = true }
 assert(loadfile(path))("Polymorph", ns)
 local Poly = ns.Polymorph
 
-local FPS = tonumber(arg[2]) or 120
-local DT = 1 / FPS
 -- Steps the driver `n` times. Returns Lua µs per track per update, timed with
 -- uncounted calls, then game calls and their priced µs per track per update.
 local function measure(n, tracks)

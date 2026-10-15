@@ -12,7 +12,7 @@
 --   6. M.fadeListIn(rows): fades in anchored rows from invisible, one slightly after another.
 local libPath, answerPath = assert(arg[1], "Polymorph.lua"), assert(arg[2], "answer.lua")
 
-local combat, now = false, 0
+local combat, now, tick = false, 0, 1 / 60
 local events, timers = {}, {}
 local violations = {}
 unpack = unpack or table.unpack
@@ -106,8 +106,9 @@ function Region:CreateAnimationGroup()
     table.insert(ag.anims, a)
     return a
   end
+  -- A group played during a frame has already run that frame, as measured.
   function ag:Play(reverse)
-    self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
+    self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, tick
     for _, a in ipairs(self.anims) do a.forced = nil end
   end
   function ag:Pause() self.paused = true end
@@ -184,6 +185,7 @@ end
 function InCombatLockdown() return combat end
 function debugprofilestop() return os.clock() * 1000 end
 function GetTime() return now end
+function GetTickTime() return tick end
 C_Timer = {
   After = function(sec, fn) timers[#timers + 1] = { at = now + sec, fn = fn } end,
   NewTimer = function(sec, fn) local t = { at = now + sec, fn = fn, Cancel = function(self) self.cancelled = true end }; timers[#timers + 1] = t; return t end,
@@ -199,7 +201,7 @@ local M = assert(loadfile(answerPath))()
 local function run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
-    now = now + dt
+    now, tick = now + dt, dt
     advanceAnimations(dt)
     for i = #timers, 1, -1 do
       local t = timers[i]
