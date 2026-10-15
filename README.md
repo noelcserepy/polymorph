@@ -1,3 +1,5 @@
+<img src="docs/media/polymorph-logo-pixels.svg" alt="" width="64" height="64">
+
 # Polymorph
 
 Target-state animation for World of Warcraft addons. Springs, tweens and retargeting, with combat lockdown handled for you.
@@ -10,6 +12,10 @@ Poly(frame):to({ width = 300 }, { duration = 0.25, ease = "outCubic" })
 Poly(panel):hide("below")                                      -- animate out, then Hide()
 ```
 
+![A damage meter whose bars grow as damage comes in and whose rows slide into their new rank when players overtake each other](docs/media/damage-meter.gif)
+
+A damage meter built with Polymorph. Each bar tweens to its new amount on every update, and rows move to their new rank with an `inOutCubic` tween.
+
 > **Status: early.** Version 0.1, tested on the WoW Forever beta (1.60.1, interface 16001). Other game versions are untested. The API may still change.
 
 ## Why
@@ -17,6 +23,10 @@ Poly(panel):hide("below")                                      -- animate out, t
 Blizzard's animation groups play fixed clips. You can't change a clip's target while it plays, you can't animate width or height, and a translation snaps back when it ends.
 
 With Polymorph you say what state a frame should be in. Call `:to()` again at any time, and the frame continues from where it is. A spring keeps its speed when the target changes, so a frame that follows the mouse, a bar that grows on every event, or a panel that opens and closes quickly never jumps.
+
+![The same target jumps around one panel twice: first an animation group restarted on each new target, which snaps back whenever a move is interrupted, then Polymorph, which glides](docs/media/animationgroup-vs-polymorph.gif)
+
+The same moving target, twice. First the usual animation-group approach, `Stop()` and `Play()` on each new target: every interrupted move snaps back to where the last one started. Then `Poly(sheep):to({ x = x, y = y })`, which continues from wherever the sheep is.
 
 ## Install
 
@@ -76,6 +86,10 @@ Poly(f):hide("below")    -- slide down and fade, then Hide()
 ```
 
 Presets name where the frame is while it's away: `fade`, `pop`, `below`, `above`, `left`, `right`. You can also pass a table such as `{ alpha = 0, x = 120 }`. When a hide finishes, every property that `show()` or `hide()` still owns is back at rest, so a plain `Show()` later looks normal. A property you take over with `to()`, `set()` or `stop()` stays the way you left it, and the hide still finishes. Calling `show()` during a `hide()` turns the frame around, and `Hide()` is never called.
+
+![A loot window that opens, rows that arrive one after another, and rows that leave as they are looted while the rows below close the gap](docs/media/loot-window.gif)
+
+A loot window. Rows arrive 30 ms apart with `show()`. A looted row leaves with `hide()`, then the rows below and the window's bottom edge close the gap together.
 
 ## Combat
 
