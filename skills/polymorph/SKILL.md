@@ -47,7 +47,7 @@ Each rule prevents a bug that is easy to write and hard to see.
 4. **Read through Polymorph.** `m:get("x")` returns the drawn value. `GetPoint()`, `GetLeft()` and `GetScale()` miss the native animations Polymorph uses in combat.
 5. **Scale grows around the anchor point and scales the anchor offset.** To grow a button around its center, anchor it by `"CENTER"` at offset 0 inside a holder frame, position the holder, and animate the button's `scale`.
 6. **Protected frames in combat.** The game blocks `SetPoint`, `SetSize`, `Show` and `Hide` on protected frames during combat lockdown, and calling one shows the player an error. Polymorph never makes those calls while a frame is locked:
-   - `alpha`, `x`, `y` and `scale` keep animating (`scale` is not yet tested in a real fight),
+   - `alpha`, `x`, `y` and `scale` keep animating,
    - `width` and `height` wait for combat to end,
    - `show()` on a hidden frame waits for combat to end,
    - `hide()` fades now and calls `Hide()` when combat ends. The faded frame still takes clicks until then.
