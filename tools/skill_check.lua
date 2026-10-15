@@ -197,21 +197,7 @@ C_Timer = {
   After = function(sec, fn) timers[#timers + 1] = { at = now + sec, fn = fn } end,
   NewTimer = function(sec, fn) local t = { at = now + sec, fn = fn, Cancel = function(self) self.cancelled = true end }; timers[#timers + 1] = t; return t end,
 }
--- WoW's string.format errors on %d and %i outside the 32-bit range.
-local realFormat = string.format
-string.format = function(fmt, ...)
-  local i = 0
-  for spec in fmt:gmatch("%%[-+ #0-9.]*([%a%%])") do
-    if spec ~= "%" then
-      i = i + 1
-      local v = select(i, ...)
-      if (spec == "d" or spec == "i") and type(v) == "number" and (v >= 2 ^ 31 or v < -2 ^ 31) then
-        error("integer overflow attempting to store " .. realFormat("%.0f", v), 2)
-      end
-    end
-  end
-  return realFormat(fmt, ...)
-end
+local realFormat = dofile("tests/format_fake.lua")
 function BreakUpLargeNumbers(n)
   local s = realFormat("%.0f", n)
   local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()

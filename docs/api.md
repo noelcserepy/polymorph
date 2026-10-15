@@ -234,7 +234,7 @@ Unknown easing, spring and preset names raise an error.
 
 `Poly(texture)` and `Poly(fontString)` work like `Poly(frame)`, with the same properties. Textures and font strings have every method Polymorph calls, and native `alpha`, `x` and `y` tweens run on them as on frames.
 
-A texture or font string counts as locked in combat by its own `IsProtected()`, the same rule as a frame. On a `SecureActionButtonTemplate` button, the button's `IsProtected()` is true, and its texture's and font string's are false, before and during combat. In a real fight, `SetPoint`, `SetSize`, `SetWidth`, `SetHeight`, `SetScale`, `Show` and `Hide`, each called once on a texture of such a button, raised no blocked actions. So the icon and label of a protected button animate every property in combat, `width`, `height`, `show()` and `hide()` included. The same calls on a font string haven't been tested in combat.
+A texture or font string counts as locked in combat by its own `IsProtected()`, the same rule as a frame. On a `SecureActionButtonTemplate` button, the button's `IsProtected()` is true, and its texture's and font string's are false, before and during combat. In a real fight, `SetPoint`, `SetSize`, `SetWidth`, `SetHeight`, `SetScale`, `Show` and `Hide`, each called once on a texture of such a button, raised no blocked actions. The same layout and visibility calls on a font string haven't been measured in combat yet.
 
 ## Combat
 
