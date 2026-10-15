@@ -1,5 +1,74 @@
 -- Offline tests for Polymorph.lua against a fake frame API. Runs on Lua 5.1+.
 -- Usage: lua tests/core_test.lua Polymorph.lua
+
+-- What the fake assumes about the game
+--
+-- Each behavior the fakes below copy from the client, with the in-game job that
+-- measured it, or "unmeasured". The jobs and their notes are the maintainer's
+-- private harness. A change to a fake updates its line here. The unmeasured
+-- lines are the checklist for the next in-game session.
+--
+-- Clock and frame order:
+-- GetTickTime() equals OnUpdate's elapsed, also in job code and C_Timer callbacks: tick_time.lua, 2026-10-15
+-- GetTime() holds still within a frame and grows by OnUpdate's elapsed between frames: unmeasured
+-- A group's elapsed read in OnUpdate is GetTime() minus GetTime() in the frame it was played: anim_clock.lua, 2026-10-15
+-- Animations advance after scripts, so a group drawn in the frame it was played already counts it: anim_clock.lua, draw_lag.lua, 2026-10-15
+-- Event and timer code runs before the frame's OnUpdate: unmeasured (native_tweens.lua, 2026-10-15, fits it but does not show the order)
+-- OnFinished fires in the animation step of the frame whose elapsed reaches the duration, before drawing: unmeasured
+--
+-- Combat:
+-- A frame is locked when InCombatLockdown() and frame:IsProtected(), and a plain frame accepts everything: probe session 1, 2026-10-14
+-- SetPoint, SetSize and Hide are blocked on a locked frame: probe session 1, 2026-10-14
+-- SetWidth, SetHeight, SetScale and Show are blocked on a locked frame: unmeasured
+-- SetAlpha, CreateAnimationGroup and native Alpha, Translation and Scale groups work on a locked frame: probe session 1, 2026-10-14
+-- Writers work again when PLAYER_REGEN_ENABLED fires: combat.lua, 2026-10-14 (the library commits in that handler, 0 blocked actions)
+-- InCombatLockdown() is false inside PLAYER_REGEN_ENABLED handlers: unmeasured
+-- Deliberate difference: a blocked call errors here. The game returns normally, skips it, fires ADDON_ACTION_BLOCKED and shows a popup: probe session 1, 2026-10-14
+--
+-- Getters:
+-- GetPoint() ignores animation displacement: native_probe.lua, native_puppet.lua, combat.lua, 2026-10-14
+-- GetAlpha(), GetScale() and GetWidth() report the frame's own values under native animations: native_curves.lua, 2026-10-14
+-- GetHeight() does the same: unmeasured
+-- Getters return exactly the value last set, with no float rounding: unmeasured
+-- IsShown() reports the frame's own shown flag: unmeasured
+--
+-- Native animations:
+-- The NONE, IN, OUT and IN_OUT smoothing curves have the formulas in CURVES: native_curves.lua, 2026-10-14
+-- GetSmoothProgress() is the curve applied to GetProgress(): native_curves.lua, 2026-10-14
+-- Play(true) runs progress from 1 to 0 through the curve and fires OnFinished: native_reverse.lua, 2026-10-14
+-- GetProgress() is elapsed / duration, capped at 1: unmeasured
+-- Play() restarts from progress 0 and clears a SetSmoothProgress() value: unmeasured
+-- Pause() holds the drawn displacement: native_probe.lua, 2026-10-14
+-- SetSmoothProgress() on a paused animation sets its drawn progress: native_puppet.lua, 2026-10-14
+-- A SetSmoothProgress() value holds while its group plays unpaused: unmeasured
+-- SetOffset() and SetScaleTo() on a paused animation move the drawing live: native_puppet.lua, 2026-10-14
+-- Stop() removes the displacement: native_puppet.lua, 2026-10-14
+-- Stopping a paused Translation and calling SetPoint() at the same offset lands on the same pixel: native_probe.lua, 2026-10-14
+-- Stop() does not fire OnFinished: unmeasured
+-- SetPoint(final) then Play(true) from the start offset draws the start in the group's first frame:
+--   CONTRADICTED from OnUpdate, native_order.lua, 2026-10-15 (recorded at 120 fps: 3 of 8 starts drew the
+--   offset against the old anchor for 1-2 frames). From a C_Timer callback: 0 of 32. The fake draws it right.
+-- A finished group stops drawing, so the frame draws its own values again: native_order.lua, 2026-10-15 (SetPoint in OnFinished, no snap in 32 recorded finishes)
+-- A group finishes when its longest animation ends: unmeasured
+-- IsPlaying() is true while paused, and false after Stop() or finishing: unmeasured (the library does not call it)
+-- Anchor offsets are in the frame's own scaled units: scale_units.lua, 2026-10-14
+-- Translation offsets are in the frame's scaled units, and a Scale in the same group does not multiply them: scale_compose.lua, scale_units.lua, 2026-10-14
+-- A Scale grows around its origin, CENTER by default, and SetOrigin(point) keeps that point still: scale_compose.lua, 2026-10-14
+-- SetOrigin()'s x and y are in the frame's own units: unmeasured (the library passes 0, 0)
+-- An Alpha animation's value replaces the frame's alpha: native_tweens.lua, 2026-10-15
+-- Translation groups on one frame add up: native_tweens.lua, 2026-10-15
+-- Two Translations in one group add up: unmeasured (the probe's group had finished)
+-- Scale groups on one frame multiply, and the last playing Scale's origin wins: unmeasured
+-- Of two playing Alpha animations on one frame, the last one created draws: unmeasured
+-- A new animation lasts 1 s with NONE smoothing: unmeasured (the library sets both)
+--
+-- Strings:
+-- string.format errors on %d and %i outside the 32-bit range: unmeasured
+--
+-- The fake's asserts on SetScaleFrom(1, 1), uniform SetScaleTo() and known smoothing names check the
+-- library's own calls, and claim nothing about the game. It does not model the per-addon caps of 2000
+-- animation groups and 500 timers, measured in the startup log on 2026-10-14.
+
 local path = assert(arg[1], "path to Polymorph.lua")
 
 local combat = false
@@ -25,7 +94,7 @@ local function fire(e)
   for _, f in ipairs(eventHandlers[e] or {}) do f.onEvent(f, e) end
 end
 
--- The game's smoothing curves, measured in the client.
+-- The game's smoothing curves, measured in native_curves.lua.
 local CURVES = {
   NONE = function(p) return p end,
   IN = function(p) return 1 - math.cos(p * math.pi / 2) end,
@@ -33,7 +102,8 @@ local CURVES = {
   IN_OUT = function(p) return (1 - math.cos(p * math.pi)) / 2 end,
 }
 local allGroups = {}
--- Native animations advance after the frame's scripts, as the client runs them.
+-- Native animations advance after the frame's scripts, as anim_clock.lua measured.
+-- When in the frame OnFinished fires is unmeasured.
 local function advanceAnimations(dt)
   for _, ag in ipairs(allGroups) do
     if ag.playing and not ag.paused then
@@ -71,11 +141,12 @@ local function fakeFrame(protected)
     self.pointCalls = self.pointCalls + 1
   end
   function f:IsProtected() return protected end
-  -- Native animation groups, as measured in the client. Progress runs over the
-  -- duration, backwards when played in reverse, through the smoothing curve. A
-  -- Translation offset is in the frame's scaled units and ignores any Scale. A
-  -- Scale grows the frame around its origin, CENTER by default. An Alpha draws
-  -- its own value in place of the frame's. Groups on one frame add up.
+  -- Native animation groups. Progress runs over the duration, backwards when
+  -- played in reverse, through the smoothing curve. A Translation offset is in
+  -- the frame's scaled units and ignores any Scale. A Scale grows the frame
+  -- around its origin, CENTER by default. An Alpha draws its own value in place
+  -- of the frame's. Translation groups on one frame add up. How Scale and Alpha
+  -- groups combine is unmeasured. The list at the top says which parts are measured.
   local groups = {}
   function f:CreateAnimationGroup()
     local ag = { playing = false, paused = false, reverse = false, elapsed = 0, anims = {} }
@@ -165,7 +236,7 @@ end
 unpack = unpack or table.unpack
 
 -- WoW's string.format stores %d and %i in a 32-bit int and errors outside that
--- range. Reference Lua uses 64 bits, so fake the game's limit.
+-- range (unmeasured in-game). Reference Lua uses 64 bits, so fake the game's limit.
 local realFormat = string.format
 string.format = function(fmt, ...)
   local i = 0
@@ -189,7 +260,7 @@ local Poly = ns.Polymorph
 -- Runs frames as the client does: scripts, then animations, then drawing.
 -- Test code between calls runs at the start of the next frame, as an event
 -- does, so GetTickTime() is that frame's elapsed time and Visual() what the
--- last frame drew.
+-- last frame drew. That events run before OnUpdate is unmeasured.
 local function run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
@@ -328,7 +399,7 @@ test("native tween: drawn by the game on the measured curve, no Lua per frame", 
 end)
 
 test("native and Lua tweens started together draw the same in every frame", function()
-  -- Measured in the client: a linear Lua tween drew on the same pixel as the
+  -- Measured in draw_lag.lua: a linear Lua tween drew on the same pixel as the
   -- game's own animation started with it.
   local native, lua = fakeFrame(), fakeFrame()
   Poly(native):to({ x = 100 }, { duration = 1, ease = "linear" })
