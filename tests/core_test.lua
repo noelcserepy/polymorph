@@ -507,6 +507,27 @@ test("a native slide draws inside its path from the first frame, wherever it sta
   check(f, "from a callback")
 end)
 
+test("a tween queued while the start timer runs starts on the next timer", function()
+  -- pr-reviewer's case: a SetPoint hook queued two starts mid-drain, which
+  -- overwrote a waiting start, so that tween never moved.
+  local first, waiting, nested = fakeFrame(), fakeFrame(), fakeFrame()
+  local setPoint, once = first.SetPoint, false
+  function first:SetPoint(...)
+    setPoint(self, ...)
+    if not once then
+      once = true
+      Poly(nested):to({ x = 40, y = 40 }, { duration = 0.5, ease = "linear" })
+    end
+  end
+  Poly(first):to({ x = 100 }, { duration = 0.5, ease = "linear" })
+  Poly(waiting):to({ x = 100 }, { duration = 0.5, ease = "linear" })
+  run(1)
+  for _, f in ipairs({ first, waiting, nested }) do
+    assert(not Poly(f):isMoving(), "a tween never finished")
+  end
+  assert(waiting.point[4] == 110 and nested.point[4] == 50 and nested.point[5] == 60, "did not land")
+end)
+
 test("a retarget keeps the value, however often and wherever in the frame it runs", function()
   -- pr-reviewer's case: each of ten native retargets in one frame moved x.
   local f = fakeFrame()

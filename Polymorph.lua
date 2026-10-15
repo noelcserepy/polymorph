@@ -516,8 +516,9 @@ local function startNative(m, name, t, ch)
 end
 
 -- Queued starts as flat (motion, name, track) triples, and whether the timer
--- that starts them is pending. There is at most one such timer.
-local queue, queued = {}, 0
+-- that starts them is pending. There is at most one such timer. The timer
+-- drains one list while new starts go to the other.
+local queue, spare, queued = {}, {}, 0
 local timerPending = false
 
 -- The timer: each queued track that is still queued starts natively if the
@@ -525,17 +526,20 @@ local timerPending = false
 local function startQueued()
   local started = profile()
   timerPending = false
-  local n = queued
-  queued = 0
+  -- Starting a tween calls SetPoint or SetAlpha, and a hook on either can queue
+  -- more starts. Those go to the other list and wait for the next timer.
+  local list, n = queue, queued
+  queue, queued = spare, 0
   for i = 1, n, 3 do
-    local m, name, t = queue[i], queue[i + 1], queue[i + 2]
-    queue[i], queue[i + 1], queue[i + 2] = nil, nil, nil
+    local m, name, t = list[i], list[i + 1], list[i + 2]
+    list[i], list[i + 1], list[i + 2] = nil, nil, nil
     if t.queued and m.tracks[name] == t then
       t.queued = nil
       local ch = nativeChannelFor(m, name, t, locked(m))
       if ch then startNative(m, name, t, ch) else wake(m) end
     end
   end
+  spare = list
   stats.ms = stats.ms + (profile() - started)
 end
 
