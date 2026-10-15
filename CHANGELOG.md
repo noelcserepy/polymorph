@@ -11,4 +11,4 @@ First version.
 - `show(away, opts)` and `hide(away, opts)` with the presets `fade`, `pop`, `below`, `above`, `left` and `right`. The most recent call wins, also across combat.
 - Combat lockdown: alpha animates, `x`, `y` and `scale` draw through native animations, and `width` and `height` wait for combat to end. Polymorph never calls a blocked function.
 - One shared driver, with no per-animation timers.
-- Native tweens: `alpha`, `x` and `y` tweens with `linear`, `inSine`, `outSine` or `inOutSine` run as the game's own animations, with no Lua per frame.
+- Native tweens: `alpha`, `x` and `y` tweens with `linear`, `inSine`, `outSine` or `inOutSine` run as the game's own animations, with no Lua per frame. One shared timer starts them on the next frame.

@@ -350,7 +350,7 @@ local function arrive(m, name, t)
   if t.onDone then queueCallback(t.onDone, m.frame, name) end
 end
 
-local tryNative -- defined with the other native tween code below
+local queueNative -- defined with the other native tween code below
 
 local function update()
   local started = profile()
@@ -371,17 +371,16 @@ local function update()
     for name, t in pairs(m.tracks) do
       tracks = tracks + 1
       local prop = PROPS[name]
-      -- tryNative owns the start rule. Only a tween that hasn't stepped can
-      -- start, so this filter skips the call for every running track.
-      if t.elapsed == 0 then tryNative(m, name, t, isLocked) end
-      -- A native track is drawn by the game, and its OnFinished arrives it.
-      if not t.native then
+      -- A native track is drawn by the game, and its OnFinished arrives it. A
+      -- queued track holds still until the start timer runs.
+      if not (t.native or t.queued) then
         stepped = true
         local step = now - t.time
         if step > 0.1 then step = 0.1 end -- a long hitch doesn't make a spring jump
         t.time = now
         if t.delay > 0 then
           t.delay = t.delay - step
+          if t.delay <= 0 then queueNative(m, name, t, isLocked) end
         elseif not (isLocked and waitsWhileLocked(prop)) then
           local rest
           if t.spring then rest = stepSpring(t, step) else rest = stepTween(t, step) end
@@ -400,13 +399,13 @@ local function update()
     end
     if flush1 then flush1(m) end
     if flush2 then flush2(m) end
-    -- Native tracks need no driver, so a frame with only those goes idle. A
-    -- native track can turn into a Lua track during the loop, and a Lua track
-    -- can arrive, so look again.
+    -- Native and queued tracks need no driver, so a frame with only those goes
+    -- idle. A track can be queued during the loop, and a Lua track can arrive,
+    -- so look again.
     if not stepped or next(m.tracks) == nil then
       local idle = true
       for _, t in pairs(m.tracks) do
-        if not t.native then idle = false; break end
+        if not (t.native or t.queued) then idle = false; break end
       end
       if idle then active[m] = nil end
     end
@@ -443,6 +442,11 @@ end
 -- writing when it ends, so combat starting midway blocks nothing.
 --
 -- Each frame gets at most one group per property, created once and reused.
+--
+-- Tweens start from one shared timer, never from an OnUpdate script. Recorded
+-- in the client, SetPoint then Play(true) from OnUpdate drew 3 of 8 starts
+-- against the old anchor for a frame or two, and from a timer 0 of 32. A
+-- queued track holds its value until the timer, the next frame at the latest.
 ---------------------------------------------------------------------------
 
 -- The game allows each addon 2000 animation groups, and the addon that embeds
@@ -469,22 +473,24 @@ local function nativeChannel(m, name)
   return ch
 end
 
--- Starts a native tween when the rule allows: a tween that hasn't stepped yet,
--- no delay left, the frame unlocked, a curve the game has, and a group left in
--- the budget. A native Alpha interpolates clamped ends, so alpha outside 0..1
--- stays in Lua. The game draws a new animation from the last drawn frame, so a
--- track the driver has already moved this frame stays in Lua too. Returns
--- whether it started.
-function tryNative(m, name, t, isLocked)
+-- The start rule: a tween that hasn't stepped yet, no delay left, the frame
+-- unlocked, a curve the game has, and a group left in the budget. A native
+-- Alpha interpolates clamped ends, so alpha outside 0..1 stays in Lua. Returns
+-- the group's channel when the tween may start natively.
+local function nativeChannelFor(m, name, t, isLocked)
   if t.native or t.spring or t.elapsed ~= 0 or t.delay > 0 or isLocked or t.duration <= 0
-      or not PROPS[name].tween or not NATIVE_SMOOTHING[t.ease] or t.time >= GetTime() then
-    return false
+      or not PROPS[name].tween or not NATIVE_SMOOTHING[t.ease] then
+    return nil
   end
   if name == "alpha" and not (t.value >= 0 and t.value <= 1 and t.target >= 0 and t.target <= 1) then
-    return false
+    return nil
   end
-  local ch = nativeChannel(m, name)
-  if not ch then return false end
+  return nativeChannel(m, name)
+end
+
+-- Plays a tween as its native animation. The game counts an animation from the
+-- last drawn frame, so the track does too.
+local function startNative(m, name, t, ch)
   local smoothing, a = NATIVE_SMOOTHING[t.ease], ch.anim
   a:SetDuration(t.duration)
   if name == "alpha" then
@@ -506,8 +512,48 @@ function tryNative(m, name, t, isLocked)
     commit(m)
     ch.ag:Play(true)
   end
-  t.native, t.startedAt = ch, t.time
-  return true
+  t.native, t.startedAt = ch, GetTime() - GetTickTime()
+end
+
+-- Queued starts as flat (motion, name, track) triples, and whether the timer
+-- that starts them is pending. There is at most one such timer.
+local queue, queued = {}, 0
+local timerPending = false
+
+-- The timer: each queued track that is still queued starts natively if the
+-- rule still allows, and otherwise goes on in Lua.
+local function startQueued()
+  local started = profile()
+  timerPending = false
+  local n = queued
+  queued = 0
+  for i = 1, n, 3 do
+    local m, name, t = queue[i], queue[i + 1], queue[i + 2]
+    queue[i], queue[i + 1], queue[i + 2] = nil, nil, nil
+    if t.queued and m.tracks[name] == t then
+      t.queued = nil
+      local ch = nativeChannelFor(m, name, t, locked(m))
+      if ch then startNative(m, name, t, ch) else wake(m) end
+    end
+  end
+  stats.ms = stats.ms + (profile() - started)
+end
+
+-- Queues a native start when the rule allows, and otherwise leaves the track
+-- to the driver. Every call decides afresh, so a retarget can unqueue a track.
+function queueNative(m, name, t, isLocked)
+  if not nativeChannelFor(m, name, t, isLocked) then
+    t.queued = nil
+    return
+  end
+  if t.queued then return end
+  t.queued = true
+  queue[queued + 1], queue[queued + 2], queue[queued + 3] = m, name, t
+  queued = queued + 3
+  if not timerPending then
+    timerPending = true
+    C_Timer.After(0, startQueued)
+  end
 end
 
 -- Progress, value and velocity of a native track at trackTime(), from its
@@ -637,7 +683,7 @@ local function animate(m, targets, opts, owner)
     end
     pending = pending + 1
     t.onDone = settled
-    tryNative(m, name, t, locked(m))
+    queueNative(m, name, t, locked(m))
   end
   if pending > 0 then wake(m) end
   return m

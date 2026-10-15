@@ -1,5 +1,6 @@
 -- Offline tests for Polymorph.lua against a fake frame API. Runs on Lua 5.1+.
 -- Usage: lua tests/core_test.lua Polymorph.lua
+--        TEST="native slide" lua tests/core_test.lua Polymorph.lua
 
 -- What the fake assumes about the game
 --
@@ -14,6 +15,7 @@
 -- A group's elapsed read in OnUpdate is GetTime() minus GetTime() in the frame it was played: anim_clock.lua, 2026-10-15
 -- Animations advance after scripts, so a group drawn in the frame it was played already counts it: anim_clock.lua, draw_lag.lua, 2026-10-15
 -- Event and timer code runs before the frame's OnUpdate: unmeasured (native_tweens.lua, 2026-10-15, fits it but does not show the order)
+-- C_Timer.After(0, fn) runs fn in the next frame: unmeasured
 -- OnFinished fires in the animation step of the frame whose elapsed reaches the duration, before drawing: unmeasured
 --
 -- Combat:
@@ -45,9 +47,10 @@
 -- Stop() removes the displacement: native_puppet.lua, 2026-10-14
 -- Stopping a paused Translation and calling SetPoint() at the same offset lands on the same pixel: native_probe.lua, 2026-10-14
 -- Stop() does not fire OnFinished: unmeasured
--- SetPoint(final) then Play(true) from the start offset draws the start in the group's first frame:
---   CONTRADICTED from OnUpdate, native_order.lua, 2026-10-15 (recorded at 120 fps: 3 of 8 starts drew the
---   offset against the old anchor for 1-2 frames). From a C_Timer callback: 0 of 32. The fake draws it right.
+-- SetPoint(final) then Play(true) from the start offset draws the start in the group's first frame from a
+--   C_Timer callback: native_order.lua, 2026-10-15 (0 of 32 recorded starts misdrew). From OnUpdate it can
+--   draw the offset against the anchor from before the frame's scripts for 1-2 frames (3 of 8 starts).
+--   The fake misdraws every such start from OnUpdate, for one frame.
 -- A finished group stops drawing, so the frame draws its own values again: native_order.lua, 2026-10-15 (SetPoint in OnFinished, no snap in 32 recorded finishes)
 -- A group finishes when its longest animation ends: unmeasured
 -- IsPlaying() is true while paused, and false after Stop() or finishing: unmeasured (the library does not call it)
@@ -93,6 +96,31 @@ end
 local function fire(e)
   for _, f in ipairs(eventHandlers[e] or {}) do f.onEvent(f, e) end
 end
+local frameNumber, timers = 0, {}
+_G.C_Timer = {
+  After = function(seconds, fn)
+    timers[#timers + 1] = { due = clock + seconds, frame = frameNumber, fn = fn }
+  end,
+}
+-- Runs the timers due this frame, never one made in this frame.
+local function runTimers()
+  local due = {}
+  for i = #timers, 1, -1 do
+    local t = timers[i]
+    if t.frame < frameNumber and t.due <= clock then
+      table.remove(timers, i)
+      table.insert(due, 1, t)
+    end
+  end
+  for _, t in ipairs(due) do t.fn() end
+end
+-- The recorded misdraw: a Translation group played from OnUpdate draws its first
+-- frame against the anchor the frame had before that frame's scripts ran.
+local inOnUpdate, misdrawn = false, {}
+local function clearMisdraws()
+  for _, f in ipairs(misdrawn) do f.pointBefore, f.staleAnchor = nil, nil end
+  misdrawn = {}
+end
 
 -- The game's smoothing curves, measured in native_curves.lua.
 local CURVES = {
@@ -137,6 +165,10 @@ local function fakeFrame(protected)
   function f:GetPoint() return unpack(self.point, 1, 5) end
   function f:SetPoint(a, b, c, x, y)
     assert(not (combat and protected), "SetPoint while locked")
+    if inOnUpdate and not self.pointBefore then
+      self.pointBefore = self.point
+      misdrawn[#misdrawn + 1] = self
+    end
     self.point = { a, b, c, x, y }
     self.pointCalls = self.pointCalls + 1
   end
@@ -173,7 +205,13 @@ local function fakeFrame(protected)
     end
     function ag:Play(reverse)
       self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
-      for _, a in ipairs(self.anims) do a.forced = nil end
+      for _, a in ipairs(self.anims) do
+        a.forced = nil
+        if inOnUpdate and a.kind == "Translation" then
+          f.staleAnchor = f.pointBefore or f.point
+          misdrawn[#misdrawn + 1] = f
+        end
+      end
     end
     function ag:Pause() self.paused = true end
     function ag:Stop() self.playing = false end
@@ -210,8 +248,9 @@ local function fakeFrame(protected)
   function f:Visual()
     local nx, ny, k, o = self:Native()
     local s = self.s
-    local ax, ay = (self.point[4] + nx) * s, (self.point[5] + ny) * s
-    local px, py = pointOffset(self.point[1], self.w, self.h)
+    local point = self.staleAnchor or self.point
+    local ax, ay = (point[4] + nx) * s, (point[5] + ny) * s
+    local px, py = pointOffset(point[1], self.w, self.h)
     local ox, oy = pointOffset(o[1], self.w, self.h)
     ox, oy = ox + o[2], oy + o[3]
     -- The origin stays put and everything else scales away from it by k.
@@ -257,22 +296,34 @@ local ns = { dev = true }
 assert(loadfile(path))("Polymorph", ns)
 local Poly = ns.Polymorph
 
--- Runs frames as the client does: scripts, then animations, then drawing.
--- Test code between calls runs at the start of the next frame, as an event
--- does, so GetTickTime() is that frame's elapsed time and Visual() what the
--- last frame drew. That events run before OnUpdate is unmeasured.
+-- Runs frames as the client does: timers, then OnUpdate, then animations, then
+-- drawing. Test code between calls runs at the start of the next frame, as an
+-- event does, so GetTickTime() is that frame's elapsed time and Visual() what
+-- the last frame drew. That events and timers run before OnUpdate is unmeasured.
 local function run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
-    if driverScript then driverScript(nil, tick) end
+    clearMisdraws()
+    runTimers()
+    if driverScript then
+      inOnUpdate = true
+      driverScript(nil, tick)
+      inOnUpdate = false
+    end
     advanceAnimations(tick)
     clock, tick = clock + dt, dt
+    frameNumber = frameNumber + 1
   end
 end
 
 local function near(a, b, eps) return math.abs(a - b) <= (eps or 1e-6) end
 local passed = 0
-local function test(name, fn) fn(); passed = passed + 1; print("ok " .. name) end
+-- TEST=text runs only the tests whose names contain text.
+local only = os.getenv("TEST")
+local function test(name, fn)
+  if only and not name:find(only, 1, true) then return end
+  fn(); passed = passed + 1; print("ok " .. name)
+end
 
 test("bezier matches CSS ease at 0.5", function()
   assert(near(Poly.easings.ease(0.5), 0.8024, 1e-3), Poly.easings.ease(0.5))
@@ -385,12 +436,15 @@ test("native tween: drawn by the game on the measured curve, no Lua per frame", 
   local m = Poly(f)
   local done = 0
   m:to({ alpha = 1, x = 100 }, { duration = 1, ease = "outSine", onComplete = function() done = done + 1 end })
-  assert(f.alpha == 1 and f.point[4] == 110, "final values not written first")
+  -- It holds for this frame, and the timer starts it in the next.
   run(1 / 60)
+  assert(f:VisualAlpha() == 0 and f:VisualX() == 10, "moved before the start timer")
   assert(driverScript == nil, "driver still running for native tweens")
   assert(Poly.stats().active == 1, "stats() does not count a natively moving frame")
-  run(0.5 - 1 / 60)
-  local want = math.sin(math.pi / 4)
+  run(1 / 60)
+  assert(f.alpha == 1 and f.point[4] == 110, "final values not written first")
+  run(0.5 - 2 / 60)
+  local want = math.sin(math.pi / 2 * (0.5 - 1 / 60))
   assert(near(f:VisualAlpha(), want, 1e-3) and near(f:VisualX(), 10 + 100 * want, 0.1), f:VisualAlpha() .. " " .. f:VisualX())
   assert(near(m:get("alpha"), f:VisualAlpha(), 1e-3) and near(m:get("x") + 10, f:VisualX(), 0.1), "get() differs from drawing")
   run(0.6)
@@ -398,17 +452,57 @@ test("native tween: drawn by the game on the measured curve, no Lua per frame", 
   assert(f:VisualAlpha() == 1 and f:VisualX() == 110 and f.pointCalls == 1, "did not land on the target")
 end)
 
-test("native and Lua tweens started together draw the same in every frame", function()
+test("a native tween draws like a Lua tween started at the next frame's start", function()
   -- Measured in draw_lag.lua: a linear Lua tween drew on the same pixel as the
-  -- game's own animation started with it.
+  -- game's own animation started with it. Polymorph starts native tweens from
+  -- the next frame's timer, so a native tween started by an event draws one
+  -- frame behind a Lua one, and one started after the driver draws with it.
+  local function compare(native, lua)
+    for _ = 1, 30 do
+      run(1 / 60)
+      assert(near(native:VisualX(), lua:VisualX(), 1e-6), native:VisualX() .. " vs " .. lua:VisualX())
+    end
+    run(1)
+  end
   local native, lua = fakeFrame(), fakeFrame()
   Poly(native):to({ x = 100 }, { duration = 1, ease = "linear" })
+  run(1 / 60)
   Poly(lua):to({ x = 100 }, { duration = 1, ease = function(p) return p end })
-  for _ = 1, 30 do
-    run(1 / 60)
-    assert(near(native:VisualX(), lua:VisualX(), 1e-6), native:VisualX() .. " vs " .. lua:VisualX())
+  compare(native, lua)
+
+  native, lua = fakeFrame(), fakeFrame()
+  Poly(fakeFrame()):to({ alpha = 0.5 }, { duration = 0, onComplete = function()
+    Poly(native):to({ x = 100 }, { duration = 1, ease = "linear" })
+    Poly(lua):to({ x = 100 }, { duration = 1, ease = function(p) return p end })
+  end })
+  compare(native, lua)
+end)
+
+test("a native slide draws inside its path from the first frame, wherever it starts", function()
+  -- Recorded in native_order.lua: a Translation started from OnUpdate drew a
+  -- frame or two against the old anchor, far outside the slide.
+  local function check(f, label)
+    for frame = 1, 8 do
+      run(1 / 60)
+      local x = f:VisualX()
+      assert(x >= 10 and x <= 110, label .. ": frame " .. frame .. " drew at " .. x)
+    end
+    run(1)
+    assert(f:VisualX() == 110, label .. " did not land")
   end
-  run(1)
+  local f = fakeFrame()
+  Poly(f):to({ x = 100 }, { duration = 0.5, ease = "outSine" })
+  check(f, "from an event")
+
+  f = fakeFrame()
+  Poly(f):to({ x = 100 }, { duration = 0.5, ease = "outSine", delay = 0.05 })
+  check(f, "after a delay")
+
+  f = fakeFrame()
+  Poly(f):to({ alpha = 0.5 }, { duration = 0, onComplete = function()
+    Poly(f):to({ x = 100 }, { duration = 0.5, ease = "outSine" })
+  end })
+  check(f, "from a callback")
 end)
 
 test("a retarget keeps the value, however often and wherever in the frame it runs", function()
@@ -422,7 +516,8 @@ test("a retarget keeps the value, however often and wherever in the frame it run
   for _ = 1, 10 do m:to({ x = 1000 }, { duration = 1, ease = "linear" }) end
   assert(near(m:get("x"), x) and near(f:VisualX(), drawn), "retargets moved x to " .. m:get("x"))
   run(0.25)
-  assert(near(m:get("x"), x + (1000 - x) * 0.25) and near(m:get("x") + 10, f:VisualX()), "x " .. m:get("x"))
+  -- The retarget holds one frame for the start timer.
+  assert(near(m:get("x"), x + (1000 - x) * (0.25 - 1 / 60)) and near(m:get("x") + 10, f:VisualX()), "x " .. m:get("x"))
   run(1)
 
   -- A retarget after the driver has moved the frame this time, from a callback.
@@ -473,7 +568,7 @@ test("native tween on a protected frame: combat midway blocks nothing, retarget 
   combat = true
   run(0.2)
   local drawn = f:VisualX()
-  assert(near(drawn, 60, 1e-6), "native move stopped in combat: " .. drawn)
+  assert(near(drawn, 10 + 100 * (0.5 - 1 / 60), 1e-6), "native move stopped in combat: " .. drawn)
   m:to({ x = 0 }, { duration = 0.5 })
   assert(near(f:VisualX(), drawn), "jump when the puppet took over")
   run(1)
@@ -514,7 +609,7 @@ test("native tween handed to Lua in combat keeps its timeline", function()
   local before = m:get("x")
   run(1 / 60)
   assert(m:get("x") > before and near(f:VisualX(), (10 + m:get("x")) * 2, 1e-6), "restarted: " .. before .. " -> " .. m:get("x"))
-  run(0.5)
+  run(0.5 + 1 / 60) -- it started a frame after the call, and one more frame absorbs clock rounding
   assert(not m:isMoving() and done == 1 and near(f:VisualX(), 220), "did not end on time")
   combat = false
   fire("PLAYER_REGEN_ENABLED")
@@ -555,9 +650,10 @@ test("native tween handed to the puppet mid-update moves one frame's worth, not 
     run(0.5, 10)
     combat = true
     run(0.1, 10)
-    assert(near(m:get("x"), 60, 1e-6), "x " .. m:get("x") .. " at t = 0.6")
+    -- x held for the first frame, so it is one frame behind the clock.
+    assert(near(m:get("x"), 50, 1e-6), "x " .. m:get("x") .. " at t = 0.6")
     run(0.3, 10)
-    assert(near(m:get("x"), 90, 1e-6), "x " .. m:get("x") .. " at t = 0.9")
+    assert(near(m:get("x"), 80, 1e-6), "x " .. m:get("x") .. " at t = 0.9")
     combat = false
     fire("PLAYER_REGEN_ENABLED")
     run(2)
@@ -570,11 +666,12 @@ test("native tween handed to Lua: a delay waits and velocity carries over", func
   local m = Poly(f)
   m:to({ x = 100 }, { duration = 1, ease = "linear" })
   run(0.5)
+  local frozen = m:get("x")
   m:to({ x = 0 }, { duration = 1, ease = "outCubic", delay = 0.5 })
   run(0.5)
-  assert(near(m:get("x"), 50, 1e-6), "moved during its delay: " .. m:get("x"))
+  assert(near(m:get("x"), frozen, 1e-6), "moved during its delay: " .. m:get("x"))
   run(0.1)
-  -- outCubic 50 -> 0, about 0.08 s in: near 39.
+  -- outCubic 48 -> 0, about 0.08 s in: near 37.
   assert(m:get("x") > 35 and m:get("x") < 45, "x " .. m:get("x") .. " 0.1 s after the delay")
 
   -- A handover in combat keeps the tween's velocity for a spring retarget.
