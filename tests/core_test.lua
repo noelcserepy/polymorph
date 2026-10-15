@@ -16,6 +16,7 @@
 -- Animations advance after scripts, so a group drawn in the frame it was played already counts it: anim_clock.lua, draw_lag.lua, 2026-10-15
 -- Timer callbacks run before the frame's OnUpdate scripts: start_timing.lua, 2026-10-15 (60 of 60)
 -- Event code runs before the frame's OnUpdate: unmeasured
+-- A timer callback and an OnUpdate script in the same frame are separate callbacks: regions_gradient2.lua, 2026-10-15
 -- C_Timer.After(0, fn) runs fn in the next frame: start_timing.lua, 2026-10-15 (60 of 60)
 -- OnFinished fires in the animation step of the frame whose elapsed reaches the duration, before drawing: unmeasured
 --
@@ -26,18 +27,27 @@
 -- SetAlpha, CreateAnimationGroup and native Alpha, Translation and Scale groups work on a locked frame: probe session 1, 2026-10-14
 -- Writers work again when PLAYER_REGEN_ENABLED fires: combat.lua, 2026-10-14 (the library commits in that handler, 0 blocked actions)
 -- InCombatLockdown() is false inside PLAYER_REGEN_ENABLED handlers: unmeasured
--- A texture or font string of a protected frame: whether its own IsProtected() is true, and whether the game
---   blocks its SetPoint, SetSize, SetWidth, SetHeight, SetScale, Show and Hide. unmeasured. fakeRegion
---   models the strict case: IsProtected() false, every one of those blocked while its parent is locked.
--- SetText, SetVertexColor, SetTextColor and SetAlphaGradient work on a region of a locked frame: unmeasured
---   (Blizzard's API documentation doesn't mark them protected)
+-- A texture or font string of a SecureActionButtonTemplate button reports IsProtected() false, before and in
+--   combat, while the button reports true: regions.lua, regions_combat.lua, 2026-10-15
+-- SetPoint, SetSize, SetWidth, SetHeight, SetScale, Show and Hide, each called once in combat on a texture of
+--   such a button, raised 0 blocked actions: regions_combat.lua, 2026-10-15. Show, SetScale, SetWidth,
+--   SetHeight and Hide read back applied. SetPoint and SetSize failed an exact comparison, which the same
+--   calls fail out of combat too (30.000002 and 59.999905): regions_measure.lua, 2026-10-15
+-- The same calls on a font string of a protected frame in combat: unmeasured. fakeRegion treats a region like a
+--   frame, locked by its own IsProtected().
+-- SetText, SetVertexColor and SetAlphaGradient on regions of protected frames in combat raised 0 blocked actions,
+--   and the text and color read back changed: regions_combat.lua, 2026-10-15. SetTextColor in combat: unmeasured
 -- Deliberate difference: a blocked call errors here. The game returns normally, skips it, fires ADDON_ACTION_BLOCKED and shows a popup: probe session 1, 2026-10-14
 --
 -- Getters:
 -- GetPoint() ignores animation displacement: native_probe.lua, native_puppet.lua, combat.lua, 2026-10-14
--- GetAlpha(), GetScale() and GetWidth() report the frame's own values under native animations: native_curves.lua, 2026-10-14
+-- GetAlpha(), GetScale() and GetWidth() read from OnUpdate report the frame's own values under native animations:
+--   native_curves.lua, 2026-10-14. Read from a C_Timer callback, GetAlpha() reports the drawn alpha, on frames,
+--   textures and font strings: regions_measure.lua, regions_gradient.lua, 2026-10-15. The fake always reports
+--   the own value. The library reads GetAlpha() only for a property with no track.
 -- GetHeight() does the same: unmeasured
--- Getters return exactly the value last set, with no float rounding: unmeasured
+-- Getters return exactly the value last set, with no float rounding. Measured otherwise: SetAlpha(0.5) reads
+--   0.50196 (1/255 steps), and a texture's SetPoint(..., 100) reads 99.99999: regions.lua, 2026-10-15
 -- IsShown() reports the frame's own shown flag: unmeasured
 --
 -- Native animations:
@@ -71,13 +81,19 @@
 -- Scale groups on one frame multiply, and the last playing Scale's origin wins: unmeasured
 -- Of two playing Alpha animations on one frame, the last one created draws: unmeasured
 -- A new animation lasts 1 s with NONE smoothing: unmeasured (the library sets both)
--- Textures and font strings have CreateAnimationGroup, and Alpha, Translation and Scale animations draw on
---   them as on frames: unmeasured. Blizzard's mainline UI plays Alpha and Translation groups on textures
---   (AlertFrameSystems.xml), and the API docs list every method the library calls on regions.
+-- Textures and font strings have every method the library calls: regions.lua, 2026-10-15
+-- Polymorph's native Alpha and Translation tweens start and play on textures and font strings, and draw at the
+--   same x and brightness as a Lua tween on the same curve: regions_measure.lua, 2026-10-15
+-- Scale animations on textures and font strings: unmeasured
 --
 -- Region methods:
--- FontString:SetAlphaGradient(start, length) shows text up to start and fades it out over length, and
---   ClearAlphaGradient() shows it all: unmeasured, including whether start counts characters or pixels
+-- FontString:SetAlphaGradient(start, length) shows `start` characters and fades the next `length` out. It counts
+--   on across wrapped lines, a UTF-8 character counts once, and |c color codes don't count:
+--   regions_measure.lua, regions_gradient.lua, 2026-10-15. ClearAlphaGradient() shows it all: regions.lua, 2026-10-15
+-- SetText, even of the same string, clears the drawn gradient, and a gradient set later in the same callback
+--   doesn't draw. One set in a later callback, such as an OnUpdate after a timer in the same frame, does:
+--   regions_gradient.lua, regions_gradient2.lua, 2026-10-15. The fake models callbacks as test code, each
+--   timer, and the driver's OnUpdate.
 --
 -- Strings:
 -- string.format errors on %d and %i outside the 32-bit range: unmeasured
@@ -111,6 +127,8 @@ local function fire(e)
   for _, f in ipairs(eventHandlers[e] or {}) do f.onEvent(f, e) end
 end
 local frameNumber, timers = 0, {}
+-- Which callback the game is in. SetText clears the gradient for the rest of it.
+local callback = 0
 _G.C_Timer = {
   After = function(seconds, fn)
     timers[#timers + 1] = { due = clock + seconds, frame = frameNumber, fn = fn }
@@ -126,7 +144,10 @@ local function runTimers()
       table.insert(due, 1, t)
     end
   end
-  for _, t in ipairs(due) do t.fn() end
+  for _, t in ipairs(due) do
+    callback = callback + 1
+    t.fn()
+  end
 end
 -- The recorded misdraw: a Translation group played from OnUpdate draws its first
 -- frame against the anchor the frame had before that frame's scripts ran.
@@ -290,23 +311,21 @@ local function fakeFrame(protected)
 end
 unpack = unpack or table.unpack
 
--- A texture or font string on `parent`, which IsProtected() decides. Every
--- layout writer is blocked while the parent is locked: the strict case of the
--- unmeasured assumption at the top.
-local function fakeRegion(parent)
-  local r = fakeFrame(false)
+-- A texture or font string of `parent`. Like a frame, it is locked by its own
+-- IsProtected(), which is false on a protected button as measured. `gradient`
+-- is what draws: SetText clears it, and a gradient set later in the same
+-- callback doesn't draw.
+local function fakeRegion(parent, protected)
+  local r = fakeFrame(protected)
   function r:IsObjectType(kind) return kind == "Region" end
   function r:GetParent() return parent end
-  for _, name in ipairs({ "SetPoint", "SetSize", "SetWidth", "SetHeight", "SetScale", "Show", "Hide" }) do
-    local write = r[name]
-    r[name] = function(self, ...)
-      assert(not (combat and parent:IsProtected()), name .. " on a region of a locked frame")
-      return write(self, ...)
-    end
+  function r:SetText(text)
+    self.text, self.gradient, self.textCallback = text, nil, callback
   end
-  function r:SetText(text) self.text = text end
   function r:GetText() return self.text end
-  function r:SetAlphaGradient(start, length) self.gradient = { start, length } end
+  function r:SetAlphaGradient(start, length)
+    if self.textCallback ~= callback then self.gradient = { start, length } end
+  end
   function r:ClearAlphaGradient() self.gradient = nil end
   r.color = { 1, 1, 1 }
   function r:SetVertexColor(red, green, blue) self.color = { red, green, blue } end
@@ -346,6 +365,7 @@ local function run(seconds, fps)
     clearMisdraws()
     runTimers()
     if driverScript then
+      callback = callback + 1
       inOnUpdate = true
       driverScript(nil, tick)
       inOnUpdate = false
@@ -353,6 +373,7 @@ local function run(seconds, fps)
     advanceAnimations(tick)
     clock, tick = clock + dt, dt
     frameNumber = frameNumber + 1
+    callback = callback + 1 -- test code after this runs as the next frame's event
   end
 end
 
@@ -1074,21 +1095,16 @@ test("random show/hide sequences end where the last calls say", function()
   end
 end)
 
-test("a texture on a protected frame in combat: alpha and x animate, width and Hide wait", function()
-  -- fakeRegion's own IsProtected() is false, and its parent's lock blocks its writers.
+test("a texture of a protected frame in combat is not locked: its own IsProtected() decides", function()
   local tex = fakeRegion(fakeFrame(true))
   combat = true
   Poly(tex):to({ alpha = 0.5, x = 30, width = 160 }, { duration = 0.2 })
   run(0.5)
-  assert(tex.alpha == 0.5 and tex.pointCalls == 0 and tex.w == 100, "layout written while locked")
-  assert(near(tex:VisualX(), 40), "puppet did not show x: " .. tex:VisualX())
+  assert(tex.alpha == 0.5 and tex.point[4] == 40 and tex.w == 160, "waited for combat to end")
   Poly(tex):hide("fade", { duration = 0.2 })
   run(0.5)
-  assert(tex.shown and tex:VisualAlpha() == 0, "did not fade, or hid while locked: " .. tex:VisualAlpha())
   combat = false
-  fire("PLAYER_REGEN_ENABLED")
-  run(0.5)
-  assert(not tex.shown and tex.point[4] == 40 and tex.w == 160, "not finished after combat")
+  assert(not tex.shown, "Hide waited for combat to end")
 end)
 
 -- The examples in docs/api.md, run as written: the block that defines `name`.
@@ -1124,6 +1140,33 @@ test("define: names belong to the handle, built-in names error, a redefine keeps
   assert(seen.again == 10 and a:get("n") == 10, "the new writer did not finish it")
 end)
 
+test("define: redefining some of a writer's names leaves its other writer drawing current values", function()
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:define({ r = 1, g = 1 }, function(frame, v) frame.r, frame.g = v.r, v.g end)
+  m:define({ r = 1 }, function(frame, v) frame.r = v.r end)
+  m:set({ r = 0.2 })
+  m:set({ g = 0.5 })
+  assert(f.r == 0.2 and m:get("r") == 0.2, "the first writer drew a stale r: " .. f.r)
+  m:to({ g = 0 }, { duration = 0.1 })
+  run(0.2)
+  assert(f.r == 0.2 and f.g == 0, "the driver drew a stale r: " .. f.r)
+end)
+
+test("define: a value with precision 0.5 arrives in the frame its digits settle", function()
+  local m = Poly(fakeFrame())
+  local text
+  m:define({ n = 0 }, function(_, v) text = ("%.0f"):format(v.n) end, { precision = 0.5 })
+  m:to({ n = 1500000 })
+  local frame, changed, last = 0, 0, nil
+  repeat
+    run(1 / 60)
+    frame = frame + 1
+    if text ~= last then changed, last = frame, text end
+  until not m:isMoving() or frame > 600
+  assert(text == "1500000" and frame == changed, "arrived " .. (frame - changed) .. " frames after the digits settled")
+end)
+
 test("example number counter: rolls to each total, retargets mid-roll, prints past 2^31", function()
   local fs = fakeRegion(fakeFrame())
   local calls, setText = 0, fs.SetText
@@ -1151,19 +1194,35 @@ test("example number counter: rolls to each total, retargets mid-roll, prints pa
   assert(fs.text == "2147489648" and not m:isMoving(), fs.text)
 end)
 
-test("example typewriter: reveals at its speed, starts over on new text, clears at the end", function()
+test("example typewriter: types at its speed and never draws untyped text, called from an event or onComplete", function()
   local fs = fakeRegion(fakeFrame())
   local typeText = example("Typewriter")(fs, 40)
+  -- Runs frames until `text` has typed out. Until then, each frame draws a gradient, never the whole text.
+  local function typesOut(text, frames)
+    for _ = 1, frames or 120 do
+      run(1 / 60)
+      if not fs.gradient then
+        assert(fs.text == text and not Poly(fs):isMoving(), "drew all of " .. tostring(fs.text) .. " while typing")
+        return
+      end
+    end
+    if not frames then error(text .. " never finished") end
+  end
   typeText("Hello, w\195\182rld") -- 12 characters in 13 bytes
-  assert(fs.text == "Hello, w\195\182rld" and fs.gradient[1] == 0, "did not start hidden")
-  run(0.15)
-  assert(near(fs.gradient[1], 6, 0.7), "shown " .. fs.gradient[1] .. " after 0.15 s at 40 per second")
-  typeText("Again")
-  assert(fs.gradient[1] == 0, "new text did not start over")
-  run(0.1)
-  assert(fs.gradient and fs.gradient[1] > 0, "the first text's end cleared the second")
-  run(0.1)
-  assert(fs.gradient == nil and not Poly(fs):isMoving(), "gradient not cleared at the end")
+  typesOut(nil, 10)
+  assert(fs.text == "Hello, w\195\182rld" and near(fs.gradient[1], 6, 0.7), "shown " .. fs.gradient[1] .. " after 10 frames at 40 per second")
+  typesOut("Hello, w\195\182rld")
+  -- From an onComplete, which runs inside the driver's update, after the frame's SetText would draw.
+  local started = false
+  Poly(fakeFrame()):to({ width = 0 }, { duration = 0.05, ease = "inQuad", onComplete = function()
+    typeText("Again, |cffff4040red|r")
+    started = true
+  end })
+  repeat run(1 / 60) until started
+  assert(fs.gradient, "drew all of " .. fs.text .. " in the frame typeText was called")
+  typesOut(nil, 2)
+  assert(select(3, Poly(fs):get("shown")) == 10, "color codes counted as characters")
+  typesOut("Again, |cffff4040red|r")
 end)
 
 test("example color fade: one SetVertexColor per update, retargets smoothly, runs in combat", function()

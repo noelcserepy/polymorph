@@ -28,7 +28,7 @@ Poly(f):set({ alpha = 0 }):to({ alpha = 1 })
 
 A property is finished when it's within its precision of the target. For springs, its speed must also be below 10x the precision per second. It then snaps exactly to the target.
 
-Unknown property names raise an error. To animate anything else, such as a color, a number or how much text shows, define your own values with [`m:define()`](#mdefinevalues-write).
+Unknown property names raise an error. To animate anything else, such as a color, a number or how much text shows, define your own values with [`m:define()`](#mdefinevalues-write-opts).
 
 ## `m:to(targets, opts)`
 
@@ -68,21 +68,21 @@ Returns `value, velocity, target`. `target` is nil when the property isn't movin
 
 True while the property is animating, or with no `name`, while any property is.
 
-## `m:define(values, write)`
+## `m:define(values, write, opts)`
 
 Adds your own values to this handle. Each name in `values` becomes a property that `to()`, `set()`, `stop()`, `get()`, `show()` and `hide()` take like the built-in ones. It starts at the number given. Springs, tweens, retargeting, `delay` and `onComplete` all work the same.
 
 ```lua
-Poly(fs):define({ total = 0 }, function(fs, v) fs:SetText(("%.0f"):format(v.total)) end)
+Poly(fs):define({ total = 0 }, function(fs, v) fs:SetText(("%.0f"):format(v.total)) end, { precision = 0.5 })
 Poly(fs):to({ total = 1500 })
 ```
 
-- **One writer call per update.** Polymorph keeps the current values in one table. In every update where any of them moved, it calls `write(frame, current)` once, so several values that belong together, such as `r`, `g` and `b`, reach the game in one call. `current` is the same table every time. Read it, and don't keep or change it.
-- **Names belong to the handle.** A name means something only on the handle you defined it on, so two addons can't collide through a shared list. A built-in name raises an error. Defining a name again replaces its writer and keeps its current value.
+- **One writer call per update.** The handle keeps every value defined on it in one table, `current`. In every update where any of a writer's values moved, Polymorph calls `write(frame, current)` once, so several values that belong together, such as `r`, `g` and `b`, reach the game in one call. `current` is the same table every time. Read it, and don't keep or change it.
+- **Names belong to the handle.** A name means something only on the handle you defined it on, so two addons can't collide through a shared list. A built-in name raises an error. Defining a name again replaces its writer and keeps its current value. A writer that still owns other names keeps reading this one's current value.
 - **Rest values.** For `show()` and `hide()`, a defined value rests at the number it was first defined with. `m:restAt()` changes it.
-- **Precision.** A defined value is finished within 0.001 of its target.
+- **Precision.** A defined value is finished within `opts.precision` of its target, 0.001 by default. A spring then snaps to the target. For a number shown as a whole number, pass `{ precision = 0.5 }`. At 0.001, the default spring rolls on for 0.63 s after the shown digits stop changing, whatever the distance, so `onComplete` and `isMoving()` come that much late. That is the library's spring stepped at 60 fps, from 0 to 1,234, 1.5 million and 3 billion. Tweens finish on time either way.
 - **Always Lua.** Defined values never run as native animations.
-- **Combat.** Polymorph calls `write` in combat too, and never waits for combat to end. So a writer must call only what the game allows on a protected frame in combat. Never call `SetPoint`, `SetSize`, `SetWidth`, `SetHeight`, `SetScale`, `Show` or `Hide` from it. Animate position, size and scale with the built-in properties, which handle combat. Blizzard's API documentation marks those layout calls as protected, and doesn't mark `SetText`, `SetVertexColor`, `SetTextColor` or `SetAlphaGradient`. Those four haven't been measured in combat yet.
+- **Combat.** Polymorph calls `write` in combat too, and never waits for combat to end. So a writer must call only what the game allows in combat. Never call `SetPoint`, `SetSize`, `SetWidth`, `SetHeight`, `SetScale`, `Show` or `Hide` from it. Animate position, size and scale with the built-in properties, which handle combat. In a real fight, `SetText`, `SetVertexColor` and `SetAlphaGradient` on textures and font strings of protected buttons raised no blocked actions. `SetTextColor` hasn't been tested in combat.
 - **No animation calls inside `write`.** It runs inside the driver's update. Start the next animation from `onComplete` instead.
 - **Numbers above 2^31.** WoW's `string.format("%d")` errors above 2^31. Format with `"%.0f"`.
 
@@ -101,7 +101,7 @@ local Poly = LibStub("Polymorph-1.0")
 local function NumberCounter(fs)
   local m = Poly(fs):define({ total = 0 }, function(text, v)
     text:SetText(("%.0f"):format(v.total)) -- "%.0f", since "%d" errors above 2^31
-  end)
+  end, { precision = 0.5 }) -- arrives when the shown digits stop changing
   m:set({ total = 0 })
   local total = 0
   return function(amount)
@@ -111,7 +111,7 @@ local function NumberCounter(fs)
 end
 ```
 
-**Typewriter.** Reveals a font string's text from the left. It uses `FontString:SetAlphaGradient(start, length)`, the call Blizzard's quest frame uses to type out quest text: everything before `start` shows, and the next `length` fade out. Because the whole text is set at once, lines wrap where they finally will, and words never jump to the next line as they grow. Slicing the string instead would reflow on every step and needs care with UTF-8 and color codes.
+**Typewriter.** Reveals a font string's text from the left. It uses `FontString:SetAlphaGradient(start, length)`, the call Blizzard's quest frame uses to type out quest text: the first `start` characters show, and the next `length` fade out. Because the whole text is set at once, lines wrap where they finally will, and words never jump to the next line as they grow. Slicing the string instead would reflow on every step and needs care with UTF-8 and color codes.
 
 ```lua
 local Poly = LibStub("Polymorph-1.0")
@@ -122,17 +122,26 @@ local function Typewriter(fs, speed)
     text:SetAlphaGradient(v.shown, 4)
   end)
   return function(text)
-    fs:SetText(text)
-    local length = select(2, text:gsub("[^\128-\191]", "")) -- characters, not bytes
-    m:set({ shown = 0 }):to({ shown = length }, {
-      duration = length / speed, ease = "linear",
-      onComplete = function() fs:ClearAlphaGradient() end,
-    })
+    m:set({ shown = 0 }) -- hides the current text now
+    -- SetText clears the gradient until the code that called it returns. From a timer,
+    -- Polymorph draws the gradient later in the same frame, before the text shows.
+    C_Timer.After(0, function()
+      fs:SetText(text)
+      local plain = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+      local length = select(2, plain:gsub("[^\128-\191]", "")) -- characters, not bytes or color codes
+      m:set({ shown = 0 }):to({ shown = length }, {
+        duration = length / speed, ease = "linear",
+        onComplete = function() fs:ClearAlphaGradient() end,
+      })
+    end)
   end
 end
 ```
 
-Blizzard's quest frame names its speed in characters per second. Whether `start` counts characters or pixels in this client isn't measured yet. Either way, the reveal ends with the whole text showing, because `onComplete` clears the gradient. Color codes such as `|cff...|r` count as characters here, so text with them takes a little longer.
+Measured in the client:
+- `start` counts characters. A UTF-8 character such as `ö` counts once, and `|c` color codes don't count.
+- On wrapped text, `start` counts on into the next lines. The space where a line wraps doesn't count, so the reveal runs one character ahead per wrapped line. `onComplete` clears the gradient, so it always ends with the whole text.
+- `SetText` clears the gradient, even when the text is the same, and a gradient set later in the same function doesn't show. One set in a later script of the same frame does. With `SetText` called directly in `typeText`, the whole new text showed for one frame in 7 of 8 recorded starts from an `onComplete` or an `OnUpdate` script, and 0 of 4 from a timer. With the timer above, 0 of 12, called from all three.
 
 **Color fade.** Three values, one writer: `r`, `g` and `b` move on their own tracks, so a retarget mid-fade turns smoothly toward the new color, and the texture gets one `SetVertexColor` per update.
 
@@ -223,15 +232,13 @@ Unknown easing, spring and preset names raise an error.
 
 ## Textures and font strings
 
-`Poly(texture)` and `Poly(fontString)` work like `Poly(frame)`, with the same properties. Blizzard's API documentation lists every method Polymorph calls on them: `GetAlpha`, `SetAlpha`, `GetScale`, `SetScale`, `GetWidth`, `SetSize`, `GetPoint`, `SetPoint`, `IsShown`, `Show`, `Hide`, `IsProtected` and `CreateAnimationGroup`.
+`Poly(texture)` and `Poly(fontString)` work like `Poly(frame)`, with the same properties. Textures and font strings have every method Polymorph calls, and native `alpha`, `x` and `y` tweens run on them as on frames.
 
-A texture or font string counts as locked in combat when it or its parent frame is protected. So on a protected button in combat, its icon follows the rules in [Combat](#combat): `alpha` animates, `x`, `y` and `scale` draw through native animations, and `width`, `height`, `show()` and `Hide()` wait for combat to end. Whether the game needs that much care for regions isn't measured yet, so Polymorph takes the strict reading.
-
-Not yet measured in the client: native animations on textures and font strings, and how combat lockdown treats them. Blizzard's own UI plays Alpha and Translation animations on textures.
+A texture or font string counts as locked in combat by its own `IsProtected()`, the same rule as a frame. On a `SecureActionButtonTemplate` button, the button's `IsProtected()` is true, and its texture's and font string's are false, before and during combat. In a real fight, `SetPoint`, `SetSize`, `SetWidth`, `SetHeight`, `SetScale`, `Show` and `Hide`, each called once on a texture of such a button, raised no blocked actions. So the icon and label of a protected button animate every property in combat, `width`, `height`, `show()` and `hide()` included. The same calls on a font string haven't been tested in combat.
 
 ## Combat
 
-During combat lockdown, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide` on protected frames, on their parents, and on frames anchored to them. Polymorph treats `SetScale` the same way. A frame counts as locked when `InCombatLockdown()` and `frame:IsProtected()` are both true. Polymorph checks this every frame, so combat can start or end in the middle of an animation.
+During combat lockdown, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide` on protected frames, on their parents, and on frames anchored to them. Polymorph treats `SetScale` the same way. A frame, texture or font string counts as locked when `InCombatLockdown()` and its own `IsProtected()` are both true. Polymorph checks this every frame, so combat can start or end in the middle of an animation.
 
 | While locked | Behavior |
 | --- | --- |
@@ -269,13 +276,13 @@ A tween of `alpha`, `x` or `y` runs as one of the game's own animations when all
 
 The tween holds its start value until the next frame, when one shared timer starts every native tween queued since. Started from an `OnUpdate` script, a native `x` or `y` tween sometimes drew its first frame or two against the old anchor, far outside its path. Started from a timer, it never did in the recordings. Timers run before `OnUpdate` scripts, so a native tween called from a timer draws one frame later than the same tween in Lua would. Called from an `onComplete` callback, they draw the same.
 
-The game then draws the whole tween, and Polymorph runs no Lua for it until it ends. Polymorph writes the final value when the tween starts, and the native animation draws the way there. So `GetAlpha()` and `GetPoint()` already return the final values while it plays. Use `m:get()` for the value it draws. Retargeting, `stop()`, `set()` and combat starting midway all work as they do in Lua. Polymorph computes the drawn value from the time since the tween started and continues from there.
+The game then draws the whole tween, and Polymorph runs no Lua for it until it ends. Polymorph writes the final value when the tween starts, and the native animation draws the way there. So `GetPoint()` already returns the final anchor while it plays. `GetAlpha()` depends on where you read it: from an `OnUpdate` script it returned the final value, and from a `C_Timer` callback the drawn one. Use `m:get()` for the value it draws. Retargeting, `stop()`, `set()` and combat starting midway all work as they do in Lua. Polymorph computes the drawn value from the time since the tween started and continues from there.
 
 Springs, the other easings, `scale`, `width` and `height` always run in Lua. So does an `alpha` tween that starts or ends outside 0..1, so that it follows exactly the curve it would in Lua. When combat lockdown makes Polymorph draw a frame's position through its combat animation, a native `x` or `y` tween on that frame continues in Lua from where it draws.
 
 Measured in the client:
 - the four curves and reverse playback,
-- that getters ignore native animations,
+- that `GetPoint()` ignores native animations, and so do `GetAlpha()`, `GetScale()` and `GetWidth()` read from `OnUpdate`,
 - that a native Alpha replaces the frame's own alpha instead of multiplying it,
 - that Translations in separate groups add up,
 - that a Lua tween and the game's own Translation, started together, draw on the same pixel,

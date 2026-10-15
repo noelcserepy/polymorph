@@ -54,7 +54,7 @@ Each rule prevents a bug that is easy to write and hard to see.
 
    Your own code must not call those functions in combat either. Let Polymorph do it.
 7. **`onComplete` belongs to one call.** It runs once, after every property in that call has arrived. If a later `to()`, `set()` or `stop()` takes over one of its properties, it never runs. `hide()` is the exception: it finishes once the properties it still owns arrive.
-8. **Anything else goes through `define()`.** For a color, a number or typed-out text, define your own values on the handle once, at creation, and then animate them with `to()` like any property. Defining a name again replaces its writer and keeps its current value. Polymorph calls your writer once per update with every current value. It calls it in combat too, so the writer must never call `SetPoint`, `SetSize`, `SetScale`, `Show` or `Hide`. Use it for calls like `SetText`, `SetVertexColor`, `SetTextColor` and `SetAlphaGradient`, which Blizzard's API documentation doesn't mark as protected. Don't start animations from a writer. Format numbers with `"%.0f"`, because WoW's `"%d"` errors above 2^31.
+8. **Anything else goes through `define()`.** For a color, a number or typed-out text, define your own values on the handle once, at creation, and then animate them with `to()` like any property. Defining a name again replaces its writer and keeps its current value. Polymorph calls your writer once per update with every value defined on the handle, and `set()` calls it at once. It calls it in combat too, so the writer must never call `SetPoint`, `SetSize`, `SetScale`, `Show` or `Hide`. Use it for calls like `SetText`, `SetVertexColor`, `SetTextColor` and `SetAlphaGradient`. Don't start animations from a writer. Format numbers with `"%.0f"`, because WoW's `"%d"` errors above 2^31. A value finishes within 0.001 of its target. For a number shown whole, pass `{ precision = 0.5 }` as the third argument. Otherwise the counter keeps running for 0.63 s after its digits stop, and `onComplete` waits that long.
 
 ## API
 
@@ -69,7 +69,7 @@ Each rule prevents a bug that is easy to write and hard to see.
 | `m:show(away, opts)` | Shows the frame and animates from `away` to rest. |
 | `m:hide(away, opts)` | Animates to `away`, then calls `Hide()` and resets to rest. |
 | `m:restAt(values)` | Changes the rest values `show()` returns to. |
-| `m:define(values, write)` | Adds your own values to this handle, starting at the numbers in `values`. Polymorph calls `write(frame, current)` once per update while any of them moves. `current` holds each name's value. |
+| `m:define(values, write, opts)` | Adds your own values to this handle, starting at the numbers in `values`. Polymorph calls `write(frame, current)` once per update while any of them moves. `current` holds every value defined on the handle. `opts.precision` is how close a value must come to arrive, 0.001 by default. |
 
 Properties: `alpha`, `x`, `y`, `width`, `height`, `scale`, plus the names you `define()` on that handle. Unknown names raise an error, and so does defining a built-in name.
 
@@ -153,7 +153,7 @@ button:SetScript("OnLeave", function(b) Poly(b):to({ scale = 1 }, { spring = "st
 local function NumberCounter(fs)
   local m = Poly(fs):define({ total = 0 }, function(text, v)
     text:SetText(("%.0f"):format(v.total)) -- never "%d": it errors above 2^31
-  end)
+  end, { precision = 0.5 }) -- arrives when the shown digits stop changing
   m:set({ total = 0 })
   local total = 0
   return function(amount)
@@ -171,14 +171,18 @@ Poly(icon):define({ r = r, g = g, b = b }, function(tex, c) tex:SetVertexColor(c
 Poly(icon):to({ r = 1, g = 0.2, b = 0.2 }, { duration = 0.3, ease = "outSine" })
 ```
 
-**Typewriter.** `SetAlphaGradient(start, length)` shows the text before `start` and fades out the next `length`. The text is laid out once, so words never jump to the next line as they appear.
+**Typewriter.** `SetAlphaGradient(start, length)` shows the first `start` characters and fades out the next `length`. The text is laid out once, so words never jump to the next line as they appear. `SetText` clears the gradient until the code that called it returns, so set the text from a timer. Polymorph then draws the gradient later in the same frame. Called straight from an `onComplete` or an `OnUpdate`, the whole text shows for a frame.
 
 ```lua
 local m = Poly(fs):define({ shown = 0 }, function(text, v) text:SetAlphaGradient(v.shown, 4) end)
-fs:SetText(text)
-local length = select(2, text:gsub("[^\128-\191]", "")) -- characters, not bytes
-m:set({ shown = 0 }):to({ shown = length }, { duration = length / 40, ease = "linear",
-  onComplete = function() fs:ClearAlphaGradient() end })
+m:set({ shown = 0 }) -- hides the current text now
+C_Timer.After(0, function()
+  fs:SetText(text)
+  local plain = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+  local length = select(2, plain:gsub("[^\128-\191]", "")) -- characters, not bytes or color codes
+  m:set({ shown = 0 }):to({ shown = length }, { duration = length / 40, ease = "linear",
+    onComplete = function() fs:ClearAlphaGradient() end })
+end)
 ```
 
 **Steps in order.** Start the next step from `onComplete`.

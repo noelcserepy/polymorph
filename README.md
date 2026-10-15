@@ -60,7 +60,7 @@ To copy it in by hand, `Polymorph.lua` and `lib.xml` are all you need, plus LibS
 
 Animate several properties in one call. Each one moves on its own track.
 
-`Poly()` takes frames, textures and font strings. A texture or font string on a protected frame follows the same combat rules as the frame.
+`Poly()` takes frames, textures and font strings. Combat rules follow each one's own `IsProtected()`. The icon and label of a protected button report false, so they animate every property in combat.
 
 ### Your own values
 
@@ -72,7 +72,7 @@ Poly(icon):define({ r = r, g = g, b = b }, function(tex, c) tex:SetVertexColor(c
 Poly(icon):to({ r = 1, g = 0.2, b = 0.2 }, { duration = 0.3 })
 ```
 
-Names you define belong to that one handle, so addons sharing Polymorph can't collide. [`docs/api.md`](docs/api.md#mdefinevalues-write) has the rules and three examples you can copy: a number counter that rolls to each new total, a typewriter, and a color fade.
+Names you define belong to that one handle, so addons sharing Polymorph can't collide. [`docs/api.md`](docs/api.md#mdefinevalues-write-opts) has the rules and three examples you can copy: a number counter that rolls to each new total, a typewriter, and a color fade.
 
 ## Springs and tweens
 

@@ -310,19 +310,12 @@ driver:SetScript("OnUpdate", nil)
 local profile = debugprofilestop
 local STEP = 1 / 120
 
--- A texture or font string belongs to a frame. Whether the game blocks a
--- region's writers by the region's own IsProtected() is unmeasured, so a region
--- also counts as protected when its parent frame is.
-local function isProtected(m)
-  local f = m.frame
-  if f:IsProtected() then return true end
-  if m.isRegion == nil then m.isRegion = not f:IsObjectType("Frame") end
-  local parent = m.isRegion and f:GetParent()
-  return parent and parent:IsProtected() or false
-end
-
+-- Frames, textures and font strings alike: the game reports protection on each
+-- object. A texture or font string of a protected button reports false, and in
+-- a real fight SetPoint, SetSize, SetWidth, SetHeight, SetScale, Show and Hide
+-- on such a texture raised no blocked action.
 local function locked(m)
-  return InCombatLockdown() and isProtected(m)
+  return InCombatLockdown() and m.frame:IsProtected()
 end
 
 -- Semi-implicit Euler in steps of at most STEP. t.k and t.c are stiffness and
@@ -386,7 +379,7 @@ local function update()
   local inCombat = InCombatLockdown()
   for m in pairs(active) do
     -- Checked every frame: combat can start in the middle of an animation.
-    local isLocked = inCombat and isProtected(m) or false
+    local isLocked = inCombat and m.frame:IsProtected() or false
     m.isLocked = isLocked
     -- Properties that share a writer (x and y, width and height, the values of
     -- one define()) stage their values, and each writer runs once after the loop.
@@ -779,26 +772,29 @@ function Motion:get(name)
 end
 
 -- Makes each name in `values` a property of this handle, starting at its
--- value there. Polymorph keeps the current values in one table and, in every
--- update where any of them moved, calls write(frame, current) once. Defining a
--- name again replaces its writer and keeps its value.
-function Motion:define(values, write)
-  local current, frame = {}, self.frame
+-- value there. The handle keeps every defined value in one table, and in every
+-- update where any of a writer's names moved, Polymorph calls write(frame,
+-- values) once. Defining a name again replaces its writer and keeps its value,
+-- and every writer reads the values from the one table, so none goes stale.
+-- opts.precision: how close a value must come to its target to arrive.
+function Motion:define(values, write, opts)
+  local precision = opts and opts.precision or 0.001
+  local current, frame = self.values or {}, self.frame
+  self.values = current
   local function flush() write(frame, current) end
   self.props = self.props or {}
   for name, value in pairs(values) do
     if PROPS[name] then error("Polymorph: " .. name .. " is a built-in property", 2) end
     if type(value) ~= "number" then error("Polymorph: " .. tostring(name) .. " must start at a number", 2) end
-    local old = self.props[name]
-    current[name] = old and old.read(self) or value
+    if current[name] == nil then current[name] = value end
     local prop = {
-      precision = 0.001, staged = name, values = current, flush = flush,
+      precision = precision, staged = name, values = current, flush = flush,
       read = function() return current[name] end,
       write = function(_, v) current[name] = v; flush() end,
     }
     self.props[name] = prop
     local t = self.tracks[name]
-    if t then t.prop = prop end
+    if t then t.prop, t.precision = prop, precision end
     if self.rest[name] == nil then self.rest[name] = value end
   end
   return self
