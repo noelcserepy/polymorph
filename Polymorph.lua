@@ -30,14 +30,12 @@ end
 local InCombatLockdown, GetTime, GetTickTime = InCombatLockdown, GetTime, GetTickTime
 local abs, min, max = math.abs, math.min, math.max
 
--- The time of the last drawn frame. The game counts an animation started
--- during a frame from this time, and draws it one frame in already. New Lua
--- tracks start from it too, so both draw the same value in every frame.
-local function frameStart() return GetTime() - GetTickTime() end
-
 -- The time every track's value belongs to: this frame once the driver has
--- stepped, otherwise the last drawn frame. A value read or carried over at any
--- point in a frame is paired with this time, so a retarget never moves it.
+-- stepped, otherwise the last drawn frame. Every value Polymorph sets, reads or
+-- carries over is paired with this time, so a retarget never moves it. The game
+-- counts an animation started during a frame from the last drawn frame, and
+-- draws it one frame in already. A Lua track started before the driver steps
+-- counts from there too, so both draw the same value in every frame.
 local lastStep
 local function trackTime()
   local now = GetTime()
@@ -617,7 +615,7 @@ local function animate(m, targets, opts, owner)
       takeOver(m, name)
       if t.native then freezeNative(m, name, t) end
     else
-      t = { value = prop.read(m), velocity = 0, time = frameStart() }
+      t = { value = prop.read(m), velocity = 0, time = trackTime() }
       m.tracks[name] = t
     end
     t.target = target
