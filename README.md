@@ -103,7 +103,7 @@ In combat, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide` on protected
 | `hide()` | Fades, slides and shrinks now. The real `Hide()` happens when combat ends, and the faded frame still takes clicks until then. |
 | `show()` on a hidden frame | Waits for combat to end. |
 
-Everything in this table was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions.
+Everything in this table was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions. That includes a bar that slides in from a `PLAYER_REGEN_DISABLED` handler, as combat locks it.
 
 ## Performance
 

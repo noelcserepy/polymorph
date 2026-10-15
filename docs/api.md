@@ -149,6 +149,8 @@ During combat lockdown, the game blocks `SetPoint`, `SetSize`, `Show` and `Hide`
 
 Every row except `set()` was tested on `SecureActionButtonTemplate` buttons in real combat, with no blocked actions. For `scale`, the test covered combat starting and ending in the middle of an `x` and `scale` tween, and a `scale` spring followed by `hide("pop")` in combat.
 
+You can start animations on protected frames in a `PLAYER_REGEN_DISABLED` handler. In two real fights, `InCombatLockdown()` was still false inside that handler and true one frame later. So a native `x` or `y` tween queued there found the frame locked when it started. Polymorph then ran it through the combat animation, with no jump and no blocked actions.
+
 ## Performance and limits
 
 - **One driver.** A single shared `OnUpdate` frame steps every animation. It turns itself off when nothing moves.
