@@ -1558,6 +1558,23 @@ local function hookHaltCalls(f, source, hook)
   end
 end
 
+test("a lock check that throws at a native start halts that frame only", function()
+  local f, g = fakeFrame(true), fakeFrame(true)
+  Poly(f):to({ alpha = 0.2 }, { duration = 0.2, ease = "linear" })
+  Poly(g):to({ alpha = 0.2 }, { duration = 0.2, ease = "linear" })
+  run(1 / 60) -- the start timer runs at the start of the next frame
+  combat = true -- and checks the lock again
+  local isProtected = f.IsProtected
+  function f:IsProtected() error("test: IsProtected hook") end
+  run(1 / 60)
+  takeReports(1)
+  f.IsProtected = isProtected
+  combat = false
+  assert(not Poly(f):isMoving(), "the failing frame kept its track")
+  run(0.5)
+  assert(g:VisualAlpha() == 0.2 and not Poly(g):isMoving(), "the other frame's start was lost")
+end)
+
 test("a call from a hook during a halt is dropped, so the halt can't restart", function()
   for _, source in ipairs({ "Stop", "GetPoint", "GetNumPoints" }) do
     local f = fakeFrame()

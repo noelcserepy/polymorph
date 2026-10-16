@@ -774,8 +774,15 @@ end
 local queue, spare, queued = {}, {}, 0
 local timerPending = false
 
--- The timer: each queued track that is still queued starts natively if the
--- rule still allows, and otherwise goes on in Lua.
+-- Work on m for one queued start: a track that is still queued starts
+-- natively if the rule still allows, and otherwise goes on in Lua.
+local function startTrack(m, name, t)
+  if not t.queued or m.tracks[name] ~= t then return end
+  t.queued = nil
+  if startsNative(m, name, t, locked(m)) then startNative(m, name, t) else wake(m) end
+end
+
+-- The timer: starts every queued track, each as work on its frame.
 local function startQueued()
   local started = profile()
   timerPending = false
@@ -786,10 +793,7 @@ local function startQueued()
   for i = 1, n, 3 do
     local m, name, t = list[i], list[i + 1], list[i + 2]
     list[i], list[i + 1], list[i + 2] = nil, nil, nil
-    if t.queued and m.tracks[name] == t then
-      t.queued = nil
-      if startsNative(m, name, t, locked(m)) then enter(m, startNative, name, t) else wake(m) end
-    end
+    enter(m, startTrack, name, t)
   end
   spare = list
   stats.ms = stats.ms + (profile() - started)
