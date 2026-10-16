@@ -4,9 +4,11 @@
 -- Polymorph's own Lua on this machine, so compare runs on one machine only.
 -- "calls" counts game API calls per track per update. "est. game µs" prices
 -- those calls with costs measured in the client (WoW Forever 1.60.1, 2026-10-14)
--- and adds the Lua time, so it is an estimate, not a measurement.
+-- and adds the Lua time, so it is an estimate, not a measurement. Per-call cost
+-- moved about 5x between sessions, so GetNumPoints and GetPoint are priced by
+-- their ratio to SetPoint in one run on 2026-10-15 (0.071 and 0.144 against 0.184).
 local COST = { SetPoint = 0.95, SetAlpha = 0.33, SetScale = 0.33, SetWidth = 0.31, SetHeight = 0.31, SetSize = 0.31,
-               InCombatLockdown = 0.18, IsProtected = 0.28 }
+               InCombatLockdown = 0.18, IsProtected = 0.28, GetNumPoints = 0.37, GetPoint = 0.74 }
 local calls = {}
 local path = assert(arg[1], "path to Polymorph.lua")
 local driverScript
@@ -28,7 +30,9 @@ local plain = {
   GetHeight = function(self) return self.h end, SetHeight = function(self, v) self.h = v end,
   SetSize = function(self, w, h) self.w, self.h = w, h end,
   GetScale = function(self) return self.s end, SetScale = function(self, v) self.s = v end,
-  GetPoint = function() return "CENTER", nil, "CENTER", 0, 0 end, SetPoint = function() end,
+  GetNumPoints = function() return 1 end,
+  GetPoint = function(self) return "CENTER", nil, "CENTER", self.px or 0, self.py or 0 end,
+  SetPoint = function(self, _, _, _, x, y) self.px, self.py = x, y end,
   IsProtected = function() return false end,
 }
 local counted = {}

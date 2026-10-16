@@ -18,17 +18,19 @@ Poly(f):set({ alpha = 0 }):to({ alpha = 1 })
 | Name | Reads | Writes | Precision |
 | --- | --- | --- | --- |
 | `alpha` | `GetAlpha` | `SetAlpha`, clamped to 0..1 | 0.001 |
-| `x`, `y` | Polymorph's own offset | `SetPoint` on the frame's first anchor | 0.05 |
+| `x`, `y` | Polymorph's offset from the frame's anchors | `SetPoint` on every anchor of the frame | 0.05 |
 | `width`, `height` | `GetWidth`, `GetHeight` | `SetWidth`, `SetHeight`, or one `SetSize` when both move | 0.05 |
 | `scale` | `GetScale` | `SetScale` | 0.0005 |
 
-`x` and `y` are offsets from the frame's first anchor, as it was when Polymorph first touched the frame. Polymorph only rewrites that one anchor point. Set your anchors before the first `Poly(frame)` call.
+`x` and `y` move every anchor of the frame by the same offset, so a frame with two anchors slides instead of stretching. At `x = 0` and `y = 0` the frame sits on its own anchors. If other code re-anchors the frame between animations, the new anchors are its home from then on (see [Using Polymorph with other code](#using-polymorph-with-other-code)). A frame without anchors has nothing to offset, so Polymorph doesn't anchor it.
 
 `scale` also scales the frame's anchor offsets. To grow a frame around its center, anchor it at offset 0 inside a holder frame and position the holder.
 
 A property is finished when it's within its precision of the target. For springs, its speed must also be below 10x the precision per second. It then snaps exactly to the target.
 
-Unknown property names raise an error. To animate anything else, such as a color, a number or how much text shows, define your own values with [`m:define()`](#mdefinevalues-write-opts).
+The client stores alpha in steps of 1/255. Measured in WoW Forever 1.60.1, `SetAlpha(0.5)` reads back as 0.50196. So `m:get("alpha")` on a still frame can differ from the value you set by up to 0.002. While alpha moves, `get()` returns Polymorph's own value.
+
+Unknown property names raise an error at the line that made the call. To animate anything else, such as a color, a number or how much text shows, define your own values with [`m:define()`](#mdefinevalues-write-opts).
 
 ## `m:to(targets, opts)`
 
@@ -52,6 +54,8 @@ m:to({ width = 300 }, { duration = 0.25, ease = "outCubic" })
 
 **Callbacks and takeovers.** If a later call takes over one of a call's properties, that earlier call's `onComplete` never runs. `hide()` is the exception, described below. Callbacks run after the frame's update. A callback can safely start new animations.
 
+**Errors.** An error in an `onComplete` goes to the game's error handler, `geterrorhandler()`, once, and stops nothing. An error while Polymorph works on a frame, from a game call, an `ease`, a `define()` writer or a hook, first starts that frame over, as if `Poly(frame)` met it for the first time then. The frame keeps only its rest values and the values `define()` made, where they stopped. If a call such as `to()`, `set()` or `get()` was running, the error then goes to that call's caller. Otherwise it goes to the error handler once: during an update, a native tween's start or end, the hand-over when combat ends, or a call that waited for the frame (see [Hooks](#hooks)). Other frames keep animating. Every animation on the frame stops, even if a hook on `Stop()` of one of Polymorph's animation groups throws. Polymorph reports the first such error too. While it starts the frame over, it ignores calls on that frame, such as one from a hook on `Stop()` or on an anchor getter. The reset finishes even if the frame's `GetPoint()` or `GetNumPoints()` throws, and the next write reads the anchors again. Nothing queued for it runs: no `onComplete`, and no `show()` or `hide()` waiting for combat, so neither calls `Show()` or `Hide()`. No later call writes a value staged before the error. The frame then shows the values last set on it: a Lua animation stays where it last drew, a native Translation tween shows its end value, and a protected frame in combat goes back to the anchors and scale it had before combat. `x` and `y` read 0 there. Whether stopping a native Alpha tween restores the frame's own alpha, and therefore shows its end value after a halt, is not yet verified in the client.
+
 ## `m:set(values)`
 
 Jumps to the values immediately and stops those properties. During combat lockdown, on protected frames, restricted values are applied when combat ends (see [Combat](#combat)).
@@ -59,6 +63,8 @@ Jumps to the values immediately and stops those properties. During combat lockdo
 ## `m:stop(name)`
 
 Stops one property where it is, or every property when `name` is nil. `onComplete` callbacks don't run for stopped properties.
+
+With no `name`, it also cancels a running `show()` or `hide()`. The hide never calls `Hide()` or its `onComplete`, and a `show()` waiting for combat to end never runs. Call it before a frame goes back to a pool (see [Pools](#pools)).
 
 ## `m:get(name)`
 
@@ -194,7 +200,7 @@ m:show({ alpha = 0, x = 120 }, { spring = "gentle" })
 - A property becomes theirs when `show()` or `hide()` animates it.
 - It stops being theirs when its animation arrives back at rest, or when you take it over with `to()`, `set()` or `stop()`.
 
-Taking over a property doesn't cancel the hide. The hide stops waiting for that property, and it finishes once the properties it still owns have arrived. Only a later `show()` or `hide()` cancels it.
+Taking over a property doesn't cancel the hide. The hide stops waiting for that property, and it finishes once the properties it still owns have arrived. Only a later `show()`, `hide()` or `stop()` with no name cancels it.
 
 So a `hide()` that interrupts another hide, or a `show()` that is still restoring, still ends with the frame at rest. Properties you have taken over are left as they are.
 
@@ -228,7 +234,7 @@ Each is a function from progress to eased progress. Add your own to the table.
 
 Springs integrate in fixed steps of 1/120 s. Frame time is clamped to 0.1 s, so a long hitch doesn't make the spring jump.
 
-Unknown easing, spring and preset names raise an error.
+Unknown easing, spring and preset names raise an error at the line that made the call.
 
 ## Textures and font strings
 
@@ -256,13 +262,81 @@ Every row except `set()` was tested on `SecureActionButtonTemplate` buttons in r
 
 You can start animations on protected frames in a `PLAYER_REGEN_DISABLED` handler. In two real fights, `InCombatLockdown()` was still false inside that handler and true one frame later. So a native `x` or `y` tween queued there found the frame locked when it started. Polymorph then ran it through the combat animation, with no jump and no blocked actions.
 
+## Using Polymorph with other code
+
+Layouts, frame pools, frame movers and faders write to frames too. When a property is still, Polymorph starts from the frame's current value. Anchors get one more rule, because a stale anchor doesn't heal by itself: Polymorph never overwrites anchors that other code set.
+
+### Anchors
+
+Polymorph compares the frame's anchors with the ones it last wrote:
+- at every call that takes or returns `x` or `y`: `to`, `set`, `stop`, `get`, `show` and `hide`,
+- in every frame, before it writes them for an `x` or `y` animation running in Lua,
+- after the last write of an `x` or `y` animation running in Lua, so a hook on `SetPoint` that re-anchors the frame then takes the slide over,
+- when a native `x` or `y` tween ends,
+- and when combat ends, for every frame it moved in combat.
+
+If other code changed them, that code wins:
+- its anchors become the frame's home, and `x` and `y` are 0 there,
+- a running `x` or `y` animation stops where that code put the frame. For its `onComplete`, this counts as a takeover (see [Callbacks and takeovers](#mtotargets-opts)).
+
+So anything can move the frame: a drag, LibWindow-1.1's `RestorePosition`, Edit Mode, an AceGUI or ScrollBox layout, or a secure group header sorting its children in combat. A slide in progress stops where that code put the frame. The next `show("below")` slides from there.
+
+A native `x` or `y` tween writes the anchors once, when it starts. While the game draws it, Polymorph doesn't check them. If other code moves the frame then, Polymorph doesn't undo it. The tween draws its remaining offset from the new anchors, and when it ends, it counts as taken over.
+
+An `x` or `y` animation that arrives in combat, through the combat animation, finishes before the anchors are checked. If a secure header moved the frame during that fight, the animation's `onComplete` has already run, and the frame moves to the header's anchor when combat ends.
+
+`x` and `y` move every anchor, so a ScrollBox row, anchored `TOPLEFT` and `TOPRIGHT`, slides whole. In the client, a 300-wide row anchored that way kept its width while it slid. AceGUI's List and Flow layouts anchor each widget to the one before it, so moving one widget also moves the ones after it.
+
+### Hooks
+
+Code that hooks a frame's setters, such as `hooksecurefunc(frame, "SetPoint", fn)`, can call Polymorph while Polymorph writes to that frame. A call on a frame that arrives while Polymorph is working on that same frame runs right after that work finishes, so the call made last wins.
+
+- The work is a call to `to`, `set`, `stop`, `show`, `hide` or `restAt`, an update that moves the frame, a native tween's start or end, the hand-over when combat ends, or a restart after an error. A call from an `ease` function waits the same way.
+- Waiting calls run in the order they were made, and a call made while one of them runs waits behind them.
+- Work that already reached its targets still completes. If a hook calls `set()` during a slide's last update, the slide's `onComplete` still runs, after the `set()`.
+- `get()` and `isMoving()` answer at once. During the work, they return the work's own values. `define()` also takes effect at once.
+- A waiting call checks its arguments at once, so an unknown name raises at the hook's line.
+- Calls on other frames run at once.
+- A waiting call that throws starts the frame over (see [Errors](#mtotargets-opts)), and the calls waiting behind it are dropped. If more than 100 calls wait for one frame in a row, for example from a hook that calls Polymorph on every write, Polymorph reports an error and starts the frame over.
+
+### Pools
+
+Blizzard's `CreateFramePool` hands out the same frames again. Its default resetter hides the frame and clears its anchors, and leaves alpha, scale and size as they are. AceGUI-3.0's `Release` does the same, and also parents the frame to `UIParent`. The frame keeps its Polymorph handle. Two ways to reuse it cleanly:
+
+- Let the frame leave with `hide()`, and release it in `onComplete`. It's then hidden and at rest.
+- Call `Poly(frame):stop()` before you release it, or in the pool's resetter. Without it, a `hide()` still running would call `Hide()` on the frame after its next owner shows it.
+
+```lua
+local pool = CreateFramePool("Frame", parent, "MyRowTemplate", function(_, row)
+  Poly(row):stop()
+  row:Hide()
+  row:ClearAllPoints()
+end)
+```
+
+A frame stopped mid-fade keeps that alpha, and `show()` on it later still returns to its rest values. Rest values stay the ones recorded when Polymorph first touched the frame. The new owner's anchors become the frame's home at the next call.
+
+### Alpha, scale and size from other code
+
+Faders write alpha on the frames they manage:
+- `UIFrameFadeIn` and `UIFrameFadeOut`, every frame while they fade,
+- oUF's range element, on range events, and every 0.5 s for units such as `targettarget`,
+- LibDBIcon-1.0, on its minimap buttons.
+
+While Polymorph animates `alpha` in Lua, it writes alpha every frame too, and a native alpha tween replaces the frame's alpha while it plays. Two writers on one frame overwrite each other, and Polymorph doesn't mix them. Animate a different frame from the fader's. For example, put the content in a child frame and animate that. The child draws at its own alpha times its parent's. In the client, a child at 0.5 under a parent at 0.5 drew at 0.251.
+
+If a fader holds the frame at another alpha when Polymorph first touches it, that alpha becomes the rest value. Change it with `m:restAt({ alpha = 1 })`.
+
+The same goes for scale and size. `LibWindow.Embed(frame)` replaces the frame's `SetScale` with one that saves and re-anchors the frame. A `scale` animation would call it every frame, so animate a child of that frame instead. Edit Mode also replaces `SetPoint`, `SetScale` and `ClearAllPoints` on Blizzard's own frames. Animate your own frames, not Blizzard's.
+
 ## Performance and limits
 
 - **One driver.** A single shared `OnUpdate` frame steps every animation. It turns itself off when nothing moves.
-- **Few game calls.** Stepping the animations makes one `InCombatLockdown()` call per update. Each frame then gets at most one `SetPoint` for `x` and `y` together, and one `SetSize` for `width` and `height` together, or `SetWidth` or `SetHeight` when only one moves. Finishing work, such as a `hide()` resetting the frame, makes its own calls.
+- **Few game calls.** Stepping the animations makes one `InCombatLockdown()` call per update. Each frame then gets one `SetPoint` per anchor for `x` and `y` together, and one `SetSize` for `width` and `height` together, or `SetWidth` or `SetHeight` when only one moves. Finishing work, such as a `hide()` resetting the frame, makes its own calls. Before that `SetPoint`, it reads the frame's anchors with `GetNumPoints()` and one `GetPoint()` per anchor (see [Anchors](#anchors)). A frame with more than one anchor reads them all again after each `SetPoint` but the last, since a hook can re-anchor it in between, so two anchors cost two `GetNumPoints()` and four `GetPoint()` per update. The update where `x` or `y` arrives reads them once more. A call that takes or returns `x` or `y` reads them the same way.
 - **No timers.** Polymorph makes no per-animation timers. One shared timer starts native tweens, and at most one is pending at a time. The game caps each addon at 500 timers and 2000 animation groups. Animation groups are made once per frame and reused: one for a frame animated in combat, and one per property for native tweens. Polymorph stops making native groups after 1000, and later tweens run in Lua.
 - **Allocation.** While animations only run, the driver allocates nothing per frame. Allocation happens when work starts or ends:
   - Each `to()` call allocates one small closure, plus a track table for each property that wasn't already moving. `show()` and `hide()` also build small tables of targets.
+  - A call that waits for its frame (see [Hooks](#hooks)) allocates one small table.
   - A `hide()` builds one more table when it finishes, to reset the frame.
   - The list of pending `onComplete` callbacks grows to the most animations that finish in a single frame, and is then reused.
   - A protected frame's first move during combat lockdown creates its native animation, once.
