@@ -11,6 +11,7 @@ If `.dev/AGENTS.md` exists, read it before anything else. It holds local, untrac
 - Lua animations run from the one driver `OnUpdate`, and native tweens need no Lua at all. Add no per-animation timers, and make animation groups once per frame and property, then reuse them. Native tweens start only from the one shared start timer, never from an `OnUpdate` script, where a Translation's first frames were recorded drawing against the old anchor. The game caps each addon at 500 timers and 2000 animation groups, so native groups stop at `MAX_NATIVE_GROUPS`.
 - A change to the public API updates `docs/api.md`, `README.md` and `skills/polymorph/SKILL.md` in the same change. To test the skill, give a fresh agent only `SKILL.md` and the brief at the top of `tools/skill_check.lua`, then run `lua tools/skill_check.lua Polymorph.lua answer.lua` on its answer. `tools/skill_check_selftest.lua` proves the checker rejects answers that break the brief. Add a case there when you find one it lets through.
 - Claims about performance or game behavior in the docs must come from measurements.
+- `tests/fake_wow.lua` is the one model of the client, shared by the tests and the skill checker. Each line that models client behavior cites the in-game job and date that measured it, or says `UNMEASURED`, or `CONTRADICTED` with the evidence. Never write an order, timing or value there as fact without one.
 
 ## Checks
 
