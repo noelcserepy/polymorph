@@ -85,7 +85,7 @@ The argument says where the frame is while it's hidden. The presets are `fade`, 
 
 - `hide()` animates out, calls `Hide()`, then resets the frame to its rest values while it's hidden. A later plain `Show()` still looks normal.
 - `show()` during a running `hide()` turns the frame around, and `Hide()` never fires. An animation group whose `OnFinished` calls `Hide()` still hides a frame the player just reopened.
-- `show()` comes in from the away state only when the frame is hidden. `CreateFrame` returns a shown frame, so call `frame:Hide()` once at creation.
+- `show()` comes in from the away state only when the frame is hidden. On a shown frame it only returns the away properties to rest. So hide a new frame once, where you create it.
 
 A panel with a toggle button:
 
@@ -169,7 +169,7 @@ Each of these ran on `SecureActionButtonTemplate` buttons in real combat with no
 
 One shared `OnUpdate` drives every animation, and it turns itself off when nothing moves. Polymorph makes no timers per animation.
 
-A tween of `alpha`, `x` or `y` with `linear`, `inSine`, `outSine` or `inOutSine` runs as the game's own animation, with no Lua per frame. Use those eases when many frames fade or slide at once. With 300 frames tweening `x` in the client, Polymorph used 0.65 to 0.71 ms of Lua per frame when the tweens ran in Lua. Native, it spent 2.1 ms once to start all 300, and no Lua after that. Springs, the other eases, `scale` and size always run in Lua.
+A tween of `alpha`, `x` or `y` with `linear`, `inSine`, `outSine` or `inOutSine` can run as the game's own animation, with no Lua per frame. It does when its `duration` is above 0 and the frame isn't locked in combat as it starts. [`api.md`](api.md#native-tweens) lists the other cases that run in Lua. Use those eases when many frames fade or slide at once. With 300 frames tweening `x` in the client, Polymorph used 0.65 to 0.71 ms of Lua per frame when the tweens ran in Lua. Native, it spent 2.1 ms once to start all 300, and no Lua after that. Springs, the other eases, `scale` and size always run in Lua.
 
 `Poly.stats()` reports the driver's time in-game, and `Poly.resetStats()` clears it.
 
