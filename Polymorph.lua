@@ -462,11 +462,11 @@ end
 -- Calls on other frames run at once.
 local driving -- the motion the driver is stepping
 local queuedAny = false -- a call waited since the driver last looked
--- The motions whose groups a halt is stopping. A call on one from a Stop()
--- hook is dropped: the frame is starting over, and a call that failed there
--- would halt it again, stop the same groups, and call the hook again without
--- end. A set, since a hook can halt another frame while the first one stops.
-local stopping = {}
+-- The motions a halt is starting over. A call on one, from a hook on a game
+-- call the halt makes, is dropped: the frame is starting over, and a call that
+-- failed there would halt it again, make the same game call, and call the hook
+-- again without end. A set, since a hook can halt another frame meanwhile.
+local halting = {}
 local function runWaiting(m)
   local q, i = m.waiting, 1
   -- A halt clears m.waiting: the frame runs nothing queued before it.
@@ -486,7 +486,7 @@ end
 -- Runs fn(m, a, b, c) as work on m, or queues it while m is busy. Returns the
 -- error if the work threw.
 local function attempt(m, fn, a, b, c)
-  if stopping[m] then return end
+  if halting[m] then return end
   if m.busy or m == driving then
     local q = m.waiting
     if not q then q = {}; m.waiting = q end
@@ -517,7 +517,6 @@ end
 -- doesn't leave the others drawing: each runs, then the first error is reported.
 local function stopGroups(m)
   local err
-  stopping[m] = true
   for _, ch in pairs(channels[m] or {}) do
     local ok, e = pcall(ch.ag.Stop, ch.ag)
     if not ok then err = err or e end
@@ -527,7 +526,6 @@ local function stopGroups(m)
     local ok, e = pcall(p.ag.Stop, p.ag)
     if not ok then err = err or e end
   end
-  stopping[m] = nil
   if err then report(err) end
 end
 
@@ -537,13 +535,15 @@ end
 -- the frame as it is now. A queued native start needs no clearing: it runs
 -- only while its track is the motion's.
 function halt(m)
+  halting[m] = true
   active[m], puppeted[m], afterCombat[m] = nil, nil, nil
   local frame = m.frame
   for i = 1, callbackCount do
     if callbacks[i][2] == frame then callbacks[i][1] = nil end
   end
   resetMotion(m)
-  work(m, stopGroups)
+  stopGroups(m)
+  halting[m] = nil
 end
 
 local inCombat -- InCombatLockdown() for this update
@@ -882,9 +882,10 @@ function resetMotion(m)
   for k in pairs(m) do
     if not HANDLE[k] then m[k] = nil end
   end
-  local ok, anchors = pcall(readAnchors, m.frame)
-  m.tracks, m.anchors = {}, ok and anchors or {}
+  m.tracks, m.anchors = {}, {}
   m.offsetX, m.offsetY, m.visibilityToken = 0, 0, 0
+  local ok, anchors = pcall(readAnchors, m.frame)
+  if ok then m.anchors = anchors end
   return m
 end
 

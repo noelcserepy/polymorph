@@ -1540,64 +1540,73 @@ test("a puppet whose setup threw once draws the next slide", function()
   end
 end)
 
-test("a call from a Stop hook during a halt is dropped, so it can't halt the frame again", function()
-  local f = fakeFrame()
-  local m, armed, stops = Poly(f), false, 0
-  local create = f.CreateAnimationGroup
-  function f:CreateAnimationGroup()
-    local ag = create(self)
-    local stop = ag.Stop
-    function ag:Stop()
-      stop(self)
-      if armed then
-        stops = stops + 1
+-- A hook on a game call the halt makes (a group's Stop(), an anchor getter)
+-- calls Polymorph on the frame. That call fails the same way, so if it ran, it
+-- would halt the frame again, and the hook would call again without end.
+local function hookHaltCalls(f, source, hook)
+  if source == "Stop" then
+    local create = f.CreateAnimationGroup
+    function f:CreateAnimationGroup()
+      local ag = create(self)
+      local stop = ag.Stop
+      function ag:Stop() stop(self); hook() end
+      return ag
+    end
+  else
+    local original = f[source]
+    f[source] = function(self, ...) hook(); return original(self, ...) end
+  end
+end
+
+test("a call from a hook during a halt is dropped, so the halt can't restart", function()
+  for _, source in ipairs({ "Stop", "GetPoint", "GetNumPoints" }) do
+    local f = fakeFrame()
+    local m, armed, calls = Poly(f), false, 0
+    hookHaltCalls(f, source, function()
+      if armed and calls < 10 then
+        calls = calls + 1
         m:set({ x = 70 })
       end
-    end
-    return ag
+    end)
+    m:to({ alpha = 0.5 }, { duration = 1, ease = "linear" })
+    run(0.1)
+    local setPoint = f.SetPoint
+    function f:SetPoint() error("test: anchor family connection") end
+    armed = true
+    m:to({ x = 100 })
+    run(1 / 60)
+    takeReports(1)
+    armed, f.SetPoint = false, setPoint
+    assert(calls < 10, source .. ": the halt restarted itself")
+    local alpha = f:VisualAlpha()
+    run(1)
+    assert(f:VisualAlpha() == alpha and not m:isMoving(), source .. ": the halted frame kept drawing")
+    assert(m:get("x") == 0, source .. ": the hook's set() ran after the halt")
+    m:set({ x = 20 })
+    assert(m:get("x") == 20, source .. ": a later set() didn't land")
   end
-  m:to({ alpha = 0.5 }, { duration = 1, ease = "linear" })
-  run(0.1)
-  m:stop("alpha")
-  local setPoint = f.SetPoint
-  function f:SetPoint() error("test: anchor family connection") end
-  armed = true
-  m:to({ x = 100 })
-  run(1 / 60)
-  takeReports(1)
-  armed, f.SetPoint = false, setPoint
-  assert(stops == 1, "the halt stopped its groups " .. stops .. " times")
-  assert(m:get("x") == 0 and not m:isMoving(), "the hook's set() ran after the halt")
-  m:set({ x = 20 })
-  assert(m:get("x") == 20, "a later set() didn't land")
 end)
 
-test("a halt of another frame from a Stop hook keeps this frame's calls dropped", function()
+test("a halt of another frame from a hook keeps this frame's calls dropped", function()
   local f, g = fakeFrame(), fakeFrame()
   local m, n = Poly(f), Poly(g)
-  local armed, stops = false, 0
-  local create = f.CreateAnimationGroup
-  function f:CreateAnimationGroup()
-    local ag = create(self)
-    local stop = ag.Stop
-    function ag:Stop()
-      stop(self)
-      if armed and stops < 10 then
-        stops = stops + 1
-        pcall(n.set, n, { x = 1 })
-        m:set({ x = 70 })
-      end
+  local armed, calls = false, 0
+  hookHaltCalls(f, "Stop", function()
+    if armed and calls < 10 then
+      calls = calls + 1
+      pcall(n.set, n, { x = 1 })
+      m:set({ x = 70 })
     end
-    return ag
-  end
+  end)
   m:to({ alpha = 0.5 }, { duration = 1, ease = "linear" })
   run(0.1)
-  m:stop("alpha")
   function f:SetPoint() error("test: f anchor") end
   function g:SetPoint() error("test: g anchor") end
   armed = true
   assert(not pcall(m.set, m, { x = 100 }))
-  assert(stops == 1, "cleanup ran " .. stops .. " times")
+  armed = false
+  assert(calls < 10, "the halt restarted itself")
+  assert(m:get("x") == 0 and not m:isMoving(), "the hook's set() ran after the halt")
   reported = {}
 end)
 
