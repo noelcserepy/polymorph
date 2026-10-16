@@ -32,7 +32,7 @@ else
 end
 
 local InCombatLockdown, GetTime, GetTickTime = InCombatLockdown, GetTime, GetTickTime
-local abs, min, max = math.abs, math.min, math.max
+local abs, min, max, next = math.abs, math.min, math.max, next
 
 -- The time every track's value belongs to: this frame once the driver has
 -- stepped, otherwise the last drawn frame. Every value Polymorph sets, reads or
@@ -136,23 +136,32 @@ Poly.springs = {
 local function resolveEase(ease)
   if type(ease) == "function" then return ease end
   if type(ease) == "table" then return bezier(ease[1], ease[2], ease[3], ease[4]) end
-  return Poly.easings[ease or "outCubic"] or error("Polymorph: unknown ease " .. tostring(ease), 3)
+  return Poly.easings[ease or "outCubic"] or error("Polymorph: unknown ease " .. tostring(ease), 0)
 end
 
 local function resolveSpring(spring)
   if type(spring) == "table" then return spring end
-  return Poly.springs[spring or "default"] or error("Polymorph: unknown spring " .. tostring(spring), 3)
+  return Poly.springs[spring or "default"] or error("Polymorph: unknown spring " .. tostring(spring), 0)
 end
 
 ---------------------------------------------------------------------------
 -- Properties
 ---------------------------------------------------------------------------
 
--- x and y are offsets from the frame's first anchor as it was when Polymorph
--- first touched the frame. offsetX/Y is where the frame shows; layoutX/Y is
--- where its anchor actually is. They differ only while combat lockdown forces
--- drawing through the puppet. The same goes for scale: drawScale is where it
--- shows and layoutScale is the frame's own scale, both set only while puppeted.
+-- x and y offset every anchor of the frame by the same amount, so a frame with
+-- two anchors slides instead of stretching. m.anchors is the frame's anchors
+-- as { point, relativeTo, relativePoint, x, y, setX, setY } lists, and is
+-- empty when the frame has none. x and y leave out Polymorph's offset, and
+-- setX and setY are what the anchor has, recorded by each SetPoint commit()
+-- makes. offsetX/Y is where the frame shows. It differs from the anchors'
+-- offset only while combat lockdown forces drawing through the puppet. The
+-- same goes for scale: drawScale is where it shows and layoutScale is the
+-- frame's own scale, both set only while puppeted.
+--
+-- Other code anchors frames too: layouts, pools, frame movers. Polymorph
+-- checks the frame's anchors before every call that takes or returns x or y,
+-- and before every write of them once the frame is unlocked. If they aren't
+-- the ones it last wrote, the other code wins (adoptAnchors).
 --
 -- Puppet: a native Translation and Scale, played and paused at full progress.
 -- SetOffset and SetScaleTo on a paused animation change the drawing live, and
@@ -166,13 +175,23 @@ end
 -- point to where SetScale would put it: offset * k - layout, with
 -- k = drawScale / layoutScale. Both facts were measured in the client.
 local puppeted = {} -- motion -> true while its puppet is displaced
+
+-- A frame's animation groups are made once, the first time each is needed,
+-- and reused for its life. They live outside the motion, which a halt rebuilds.
+local puppets = setmetatable({}, { __mode = "k" })  -- motion -> its puppet
+local channels = setmetatable({}, { __mode = "k" }) -- motion -> { property -> native channel }
 local handNativeToPuppet -- defined with the native tween code below
+local anchorsHeld, adoptAnchors -- defined with the motion code below
+
+-- Scale grows around the first anchor. A frame without anchors grows around
+-- its center.
+local NO_ANCHOR = { "CENTER", nil, "CENTER", 0, 0, 0, 0 }
 
 local function puppetMove(m)
   -- The puppet's offsets assume it owns every displacement, so a native x or y
   -- tween still drawing becomes a Lua track first.
   handNativeToPuppet(m)
-  local p = m.puppet
+  local p = puppets[m]
   if not p then
     local ag = m.frame:CreateAnimationGroup()
     local tr = ag:CreateAnimation("Translation")
@@ -184,9 +203,9 @@ local function puppetMove(m)
     sc:SetScaleFrom(1, 1)
     sc:SetScaleTo(1, 1)
     p = { ag = ag, tr = tr, sc = sc, k = 1 }
-    m.puppet = p
+    puppets[m] = p
   end
-  local b = m.base
+  local b = m.anchors[1] or NO_ANCHOR
   if not puppeted[m] then
     m.layoutScale = m.frame:GetScale()
     m.drawScale = m.drawScale or m.layoutScale
@@ -202,19 +221,32 @@ local function puppetMove(m)
     p.sc:SetScaleTo(k, k)
     p.k = k
   end
-  p.tr:SetOffset((b[4] + m.offsetX) * k - (b[4] + m.layoutX), (b[5] + m.offsetY) * k - (b[5] + m.layoutY))
+  p.tr:SetOffset((b[4] + m.offsetX) * k - b[6], (b[5] + m.offsetY) * k - b[7])
 end
 
 local function commit(m)
-  local b = m.base
   if m.drawScale then
     if m.drawScale ~= m.layoutScale then m.frame:SetScale(m.drawScale) end
     m.drawScale = nil
   end
-  m.frame:SetPoint(b[1], b[2], b[3], b[4] + m.offsetX, b[5] + m.offsetY)
-  m.layoutX, m.layoutY = m.offsetX, m.offsetY
+  if anchorsHeld(m) then
+    local anchors, x, y = m.anchors, m.offsetX, m.offsetY
+    local n = #anchors
+    for i = 1, n do
+      local a = anchors[i]
+      a[6], a[7] = a[4] + x, a[5] + y
+      m.frame:SetPoint(a[1], a[2], a[3], a[6], a[7])
+      -- A hook on SetPoint can reanchor the frame before the next anchor.
+      if i < n and not anchorsHeld(m) then
+        adoptAnchors(m)
+        break
+      end
+    end
+  else
+    adoptAnchors(m)
+  end
   if puppeted[m] then
-    m.puppet.ag:Stop()
+    puppets[m].ag:Stop()
     puppeted[m] = nil
   end
 end
@@ -289,6 +321,8 @@ Poly.properties = PROPS
 local function propOf(m, name)
   return PROPS[name] or m.props and m.props[name]
 end
+
+local LAYOUT_FIELD = { x = "offsetX", y = "offsetY" }
 
 -- Restricted properties without a native path wait for combat to end.
 local function waitsWhileLocked(prop)
@@ -365,26 +399,123 @@ local function arrive(m, name, t)
 end
 
 local queueNative -- defined with the other native tween code below
+local resetMotion -- defined with the motion code below
+local halt -- defined below
+local takeVisibility -- defined with show and hide below
+-- Work the game blocks on protected frames in combat, run once combat ends.
+local afterCombat = {} -- motion -> function
 
+-- Errors. Game calls can throw: SetPoint does when an anchor would close a
+-- loop. So can a callback. Each callback, timer start and combat-end commit
+-- runs under try(), and the driver steps its frames under xpcall. An error
+-- then reaches the game's error handler once, and every other frame keeps
+-- moving. Lua 5.1's xpcall passes no arguments, so try() hands them over in
+-- upvalues.
+local tryFn, tryA, tryB, tryC, tryD
+local function callTry()
+  local fn, a, b, c, d = tryFn, tryA, tryB, tryC, tryD
+  tryFn, tryA, tryB, tryC, tryD = nil, nil, nil, nil, nil
+  return fn(a, b, c, d)
+end
+local function caught(err) return err end
+local function report(err) geterrorhandler()(err) end
+-- Runs fn(a, b, c, d). If it throws, frame m starts over before the error is
+-- reported, so the error handler can start fresh work on it.
+local function try(m, fn, a, b, c, d)
+  tryFn, tryA, tryB, tryC, tryD = fn, a, b, c, d
+  local ok, err = xpcall(callTry, caught)
+  if ok then return end
+  if m then halt(m) end
+  report(err)
+end
+
+-- Reentrant calls. Polymorph works on a frame during a public call, the
+-- frame's update, its native start or finish, its combat-end commit and its
+-- halt. A hook on a game call it makes there, or an ease, can call Polymorph
+-- on the same frame. That call waits while the frame is m.busy or `driving`,
+-- and runs once the work is done, in the order the calls came. So the work
+-- never sees the motion change under it, and the waiting call lands last.
+-- Calls on other frames run at once.
+local driving -- the motion the driver is stepping
+local queuedAny = false -- a call waited since the driver last looked
+local function runWaiting(m)
+  local q, i = m.waiting, 1
+  -- A halt clears m.waiting: the frame runs nothing queued before it.
+  while m.waiting == q and q[i] do
+    if i > 100 then
+      halt(m)
+      return report("Polymorph: hooks on this frame keep calling Polymorph")
+    end
+    local c = q[i]
+    try(m, c[1], m, c[2], c[3])
+    i = i + 1
+  end
+  if m.waiting == q then m.busy, m.waiting = nil, nil end
+end
+
+-- Runs fn(m, a, b) as work on m, or queues it while m is busy. An error clears
+-- the queue and goes on to the caller.
+local function work(m, fn, a, b)
+  if m.busy or m == driving then
+    local q = m.waiting
+    if not q then q = {}; m.waiting = q end
+    q[#q + 1] = { fn, a, b }
+    queuedAny = true
+    return m
+  end
+  m.busy = true
+  tryFn, tryA, tryB, tryC = fn, m, a, b
+  local ok, err = xpcall(callTry, caught)
+  if not ok then
+    m.busy, m.waiting = nil, nil
+    error(err, 0)
+  end
+  if m.waiting then runWaiting(m) else m.busy = nil end
+  return m
+end
+
+local function stopGroups(m)
+  for _, ch in pairs(channels[m] or {}) do ch.ag:Stop() end
+  if puppets[m] then puppets[m].ag:Stop() end
+end
+
+-- A frame whose game call threw starts over, so the error doesn't repeat and
+-- nothing from before it moves, shows or hides the frame later. Its animations
+-- stop, its queued work goes, and resetMotion rebuilds its motion as
+-- Poly(frame) would build it now. A queued native start needs no clearing: it
+-- runs only while its track is the motion's.
+function halt(m)
+  active[m], puppeted[m], afterCombat[m] = nil, nil, nil
+  local frame = m.frame
+  for i = 1, callbackCount do
+    if callbacks[i][2] == frame then callbacks[i][1] = nil end
+  end
+  resetMotion(m, frame, m.rest)
+  work(m, stopGroups)
+end
+
+local inCombat -- InCombatLockdown() for this update
 -- The writers one frame staged in this update. Reused, so stepping allocates nothing.
 local flushes = {}
 
-local function update()
-  local started = profile()
-  -- Each Lua track moves by the time since it last moved, so a track that
-  -- joined or left native drawing this frame moves only by what is left.
-  local now = GetTime()
-  lastStep = now
-  local tracks = 0
-  local inCombat = InCombatLockdown()
-  for m in pairs(active) do
+-- Steps the Lua tracks of every moving frame to lastStep, from `stepping` on,
+-- or from the first when it is nil. The driver pays for one xpcall per update,
+-- not one per frame: after an error it halts the frame that threw and calls
+-- stepAll again from the frame after it.
+local stepping, tracks
+local function stepAll()
+  local now = lastStep
+  local m = stepping or next(active)
+  while m do
+    stepping = m
     -- Checked every frame: combat can start in the middle of an animation.
     local isLocked = inCombat and m.frame:IsProtected() or false
     m.isLocked = isLocked
     -- Properties that share a writer (x and y, width and height, the values of
     -- one define()) stage their values, and each writer runs once after the loop.
     local flushCount = 0
-    local stepped = false
+    local stepped, arrived = false, false
+    driving = m
     for name, t in pairs(m.tracks) do
       tracks = tracks + 1
       local prop = t.prop
@@ -401,7 +532,10 @@ local function update()
         elseif not (isLocked and waitsWhileLocked(prop)) then
           local rest
           if t.spring then rest = stepSpring(t, step) else rest = stepTween(t, step) end
-          if rest then t.value = t.target end
+          if rest then
+            t.value, t.arrived = t.target, true
+            arrived = true
+          end
           local staged = prop.staged
           if staged then
             local into = prop.values or m
@@ -412,14 +546,34 @@ local function update()
           else
             prop.write(m, t.value)
           end
-          if rest then arrive(m, name, t) end
         end
       end
     end
+    local layoutWritten = false
     for i = 1, flushCount do
       local flush = flushes[i]
       flushes[i] = nil
       flush(m)
+      if flush == writeLayout then layoutWritten = true end
+    end
+    -- A track arrives once every write of this update has landed: a write that
+    -- finds other code's anchors takes the x and y tracks over instead. So
+    -- does a hook that reanchors the frame on its last SetPoint.
+    if arrived then
+      if layoutWritten and not isLocked and not anchorsHeld(m) then
+        adoptAnchors(m)
+      end
+      for name, t in pairs(m.tracks) do
+        if t.arrived then arrive(m, name, t) end
+      end
+    end
+    driving = nil
+    if queuedAny then
+      queuedAny = false
+      if m.waiting then
+        m.busy = true
+        runWaiting(m)
+      end
     end
     -- Native and queued tracks need no driver, so a frame with only those goes
     -- idle. A track can be queued during the loop, and a Lua track can arrive,
@@ -431,6 +585,26 @@ local function update()
       end
       if idle then active[m] = nil end
     end
+    m = next(active, m)
+  end
+end
+
+local function update()
+  local started = profile()
+  -- Each Lua track moves by the time since it last moved, so a track that
+  -- joined or left native drawing this frame moves only by what is left.
+  lastStep = GetTime()
+  inCombat = InCombatLockdown()
+  stepping, tracks = nil, 0
+  while true do
+    local ok, err = xpcall(stepAll, caught)
+    if ok then break end
+    -- Find the next frame while the failed one is still a key of active.
+    local failed = stepping
+    stepping, driving = next(active, failed), nil
+    halt(failed)
+    report(err)
+    if not stepping then break end
   end
   -- A callback can queue more callbacks. They run in this pass too.
   local i = 1
@@ -438,7 +612,7 @@ local function update()
     local c = callbacks[i]
     local fn, frame, name, takenOver = c[1], c[2], c[3], c[4]
     c[1], c[2], c[3], c[4] = nil, nil, nil, nil
-    fn(frame, name, takenOver)
+    if fn then try(nil, fn, frame, name, takenOver) end
     i = i + 1
   end
   callbackCount = 0
@@ -476,43 +650,52 @@ end
 local MAX_NATIVE_GROUPS = 1000
 local nativeGroups = 0
 
+local function nativeFinished(m, name, ch)
+  local t = m.tracks[name]
+  if t and t.native == ch then
+    -- The game drew this slide, so nothing checked the anchors since it
+    -- started. Other code may have moved the frame meanwhile.
+    if LAYOUT_FIELD[name] and not anchorsHeld(m) then
+      adoptAnchors(m)
+    else
+      t.native = nil
+      arrive(m, name, t)
+    end
+    wake(m) -- runs the callback on the next update
+  end
+end
+
 local function nativeChannel(m, name)
-  m.native = m.native or {}
-  local ch = m.native[name]
+  local own = channels[m]
+  if not own then own = {}; channels[m] = own end
+  local ch = own[name]
   if ch or nativeGroups >= MAX_NATIVE_GROUPS then return ch end
   nativeGroups = nativeGroups + 1
   local ag = m.frame:CreateAnimationGroup()
   ch = { ag = ag, anim = ag:CreateAnimation(PROPS[name].tween) }
-  ag:SetScript("OnFinished", function()
-    local t = m.tracks[name]
-    if t and t.native == ch then
-      t.native = nil
-      arrive(m, name, t)
-      wake(m) -- runs the callback on the next update
-    end
-  end)
-  m.native[name] = ch
+  ag:SetScript("OnFinished", function() work(m, nativeFinished, name, ch) end)
+  own[name] = ch
   return ch
 end
 
 -- The start rule: a tween that hasn't stepped yet, no delay left, the frame
 -- unlocked, a curve the game has, and a group left in the budget. A native
--- Alpha interpolates clamped ends, so alpha outside 0..1 stays in Lua. Returns
--- the group's channel when the tween may start natively.
-local function nativeChannelFor(m, name, t, isLocked)
+-- Alpha interpolates clamped ends, so alpha outside 0..1 stays in Lua.
+local function startsNative(m, name, t, isLocked)
   if t.native or t.spring or t.elapsed ~= 0 or t.delay > 0 or isLocked or t.duration <= 0
       or not t.prop.tween or not NATIVE_SMOOTHING[t.ease] then
-    return nil
+    return false
   end
   if name == "alpha" and not (t.value >= 0 and t.value <= 1 and t.target >= 0 and t.target <= 1) then
-    return nil
+    return false
   end
-  return nativeChannel(m, name)
+  return (channels[m] and channels[m][name]) ~= nil or nativeGroups < MAX_NATIVE_GROUPS
 end
 
 -- Plays a tween as its native animation. The game counts an animation from the
 -- last drawn frame, so the track does too.
-local function startNative(m, name, t, ch)
+local function startNative(m, name, t)
+  local ch = nativeChannel(m, name)
   local smoothing, a = NATIVE_SMOOTHING[t.ease], ch.anim
   a:SetDuration(t.duration)
   if name == "alpha" then
@@ -524,14 +707,10 @@ local function startNative(m, name, t, ch)
   else
     a:SetSmoothing(smoothing.reverse)
     local d = t.value - t.target
-    if name == "x" then
-      m.offsetX = t.target
-      a:SetOffset(d, 0)
-    else
-      m.offsetY = t.target
-      a:SetOffset(0, d)
-    end
+    if name == "x" then a:SetOffset(d, 0) else a:SetOffset(0, d) end
+    m[LAYOUT_FIELD[name]] = t.target
     commit(m)
+    if m.tracks[name] ~= t then return end -- other code had moved the frame
     ch.ag:Play(true)
   end
   t.native, t.startedAt = ch, GetTime() - GetTickTime()
@@ -557,8 +736,7 @@ local function startQueued()
     list[i], list[i + 1], list[i + 2] = nil, nil, nil
     if t.queued and m.tracks[name] == t then
       t.queued = nil
-      local ch = nativeChannelFor(m, name, t, locked(m))
-      if ch then startNative(m, name, t, ch) else wake(m) end
+      if startsNative(m, name, t, locked(m)) then try(m, work, m, startNative, name, t) else wake(m) end
     end
   end
   spare = list
@@ -568,7 +746,7 @@ end
 -- Queues a native start when the rule allows, and otherwise leaves the track
 -- to the driver. Every call decides afresh, so a retarget can unqueue a track.
 function queueNative(m, name, t, isLocked)
-  if not nativeChannelFor(m, name, t, isLocked) then
+  if not startsNative(m, name, t, isLocked) then
     t.queued = nil
     return
   end
@@ -608,10 +786,8 @@ end
 local function freezeNative(m, name, t)
   nativeToLua(t)
   m.isLocked = locked(m)
-  PROPS[name].write(m, t.value)
+  t.prop.write(m, t.value)
 end
-
-local LAYOUT_FIELD = { x = "offsetX", y = "offsetY" }
 
 function handNativeToPuppet(m)
   for name, field in pairs(LAYOUT_FIELD) do
@@ -631,19 +807,35 @@ end
 local Motion = {}
 Motion.__index = Motion
 
+local function readAnchors(frame)
+  local anchors = {}
+  for i = 1, frame:GetNumPoints() do
+    local point, relativeTo, relativePoint, x, y = frame:GetPoint(i)
+    anchors[i] = { point, relativeTo, relativePoint, x, y, x, y }
+  end
+  return anchors
+end
+
+-- Every field of a motion, read from the frame as it is now: no tracks, its
+-- anchors as they are, x and y 0 there. Poly(frame) builds a motion with it,
+-- and halt rebuilds one, so a halted motion keeps only its frame and its rest
+-- values. The same table stays, so handles the caller holds stay valid.
+function resetMotion(m, frame, rest)
+  local anchors = readAnchors(frame)
+  for k in pairs(m) do m[k] = nil end
+  m.frame, m.rest, m.tracks, m.anchors = frame, rest, {}, anchors
+  m.offsetX, m.offsetY, m.visibilityToken = 0, 0, 0
+  return m
+end
+
 local function motionFor(frame)
   local m = motions[frame]
   if m then return m end
-  local point, rel, relPoint, x, y = frame:GetPoint(1)
   local alpha = frame:GetAlpha()
-  m = setmetatable({
-    frame = frame, tracks = {},
-    base = { point or "CENTER", rel, relPoint or point or "CENTER", x or 0, y or 0 },
-    offsetX = 0, offsetY = 0, layoutX = 0, layoutY = 0, visibilityToken = 0,
-    -- What show() returns to. A frame first touched at alpha 0 rests at 1.
-    rest = { alpha = alpha > 0 and alpha or 1, scale = frame:GetScale(), width = frame:GetWidth(),
-             height = frame:GetHeight(), x = 0, y = 0 },
-  }, Motion)
+  -- What show() returns to. A frame first touched at alpha 0 rests at 1.
+  local rest = { alpha = alpha > 0 and alpha or 1, scale = frame:GetScale(), width = frame:GetWidth(),
+                 height = frame:GetHeight(), x = 0, y = 0 }
+  m = resetMotion(setmetatable({}, Motion), frame, rest)
   motions[frame] = m
   return m
 end
@@ -667,9 +859,66 @@ local function takeOver(m, name)
   end
 end
 
--- owner: "caller" for to(), "show" or "hide".
+-- Whether the frame's anchors are still the ones Polymorph last wrote or read:
+-- each of m.anchors at its setX and setY. Points match by name, and offsets
+-- within 0.01, so a getter that rounds doesn't count as a move.
+function anchorsHeld(m)
+  local frame, anchors = m.frame, m.anchors
+  local n = frame:GetNumPoints()
+  if n ~= #anchors then return false end
+  for i = 1, n do
+    local point, rel, relPoint, x, y = frame:GetPoint(i)
+    local a = anchors[i]
+    if a[1] ~= point then
+      a = nil
+      for j = 1, n do
+        if anchors[j][1] == point then a = anchors[j] break end
+      end
+    end
+    if not a or a[2] ~= rel or a[3] ~= relPoint
+        or abs(a[6] - x) > 0.01 or abs(a[7] - y) > 0.01 then
+      return false
+    end
+  end
+  return true
+end
+
+-- Other code anchored the frame since Polymorph last did, and it wins: its
+-- anchors become the frame's home, x and y are 0 there, and Polymorph's x and
+-- y animations stop without writing.
+function adoptAnchors(m)
+  m.anchors = readAnchors(m.frame)
+  m.offsetX, m.offsetY = 0, 0
+  for name in pairs(LAYOUT_FIELD) do
+    local t = m.tracks[name]
+    if t then
+      takeOver(m, name)
+      if t.native then t.native.ag:Stop() end
+      m.tracks[name] = nil
+    end
+    release(m, name)
+  end
+end
+
+-- Runs before every call that takes or returns x or y. While the puppet draws,
+-- its offsets come from the old anchors, so it draws again from the new ones.
+local function syncAnchors(m)
+  if anchorsHeld(m) then return end
+  adoptAnchors(m)
+  if puppeted[m] then
+    puppets[m].sc:SetOrigin((m.anchors[1] or NO_ANCHOR)[1], 0, 0)
+    puppetMove(m)
+  end
+end
+
+local function touchesLayout(values)
+  return values.x ~= nil or values.y ~= nil
+end
+
+-- owner: nil for to(), "show" or "hide".
 local function animate(m, targets, opts, owner)
   opts = opts or {}
+  if touchesLayout(targets) then syncAnchors(m) end
   local spring = not opts.duration and resolveSpring(opts.spring) or nil
   local ease = opts.duration and resolveEase(opts.ease) or nil
   local pending, lost = 0, false
@@ -681,7 +930,7 @@ local function animate(m, targets, opts, owner)
     if pending == 0 and not lost and opts.onComplete then opts.onComplete(m.frame) end
   end
   for name, target in pairs(targets) do
-    local prop = propOf(m, name) or error("Polymorph: unknown property " .. tostring(name), 3)
+    local prop = propOf(m, name) or error("Polymorph: unknown property " .. tostring(name), 0)
     local t = m.tracks[name]
     if t then
       takeOver(m, name)
@@ -701,18 +950,17 @@ local function animate(m, targets, opts, owner)
     if ease then
       t.ease, t.duration, t.elapsed, t.from = ease, opts.duration, 0, t.value
     end
-    if owner == "caller" then
-      release(m, name)
-    else
+    if owner then
       m.awayKeys = m.awayKeys or {}
       m.awayKeys[name] = true
+    else
+      release(m, name)
     end
     pending = pending + 1
     t.onDone = settled
     queueNative(m, name, t, locked(m))
   end
   if pending > 0 then wake(m) end
-  return m
 end
 
 -- Animates each property in `targets` toward its value.
@@ -720,48 +968,58 @@ end
 --       duration (seconds) and ease = name, { x1, y1, x2, y2 } or function
 --       delay (seconds), onComplete(frame) when every property in this call has arrived
 function Motion:to(targets, opts)
-  return animate(self, targets, opts, "caller")
+  return work(self, animate, targets, opts)
+end
+
+local function set(m, values)
+  if touchesLayout(values) then syncAnchors(m) end
+  m.isLocked = locked(m)
+  for name, value in pairs(values) do
+    local prop = propOf(m, name) or error("Polymorph: unknown property " .. tostring(name), 0)
+    takeOver(m, name)
+    local t = m.tracks[name]
+    if t and t.native then t.native.ag:Stop() end
+    m.tracks[name] = nil
+    release(m, name)
+    if m.isLocked and waitsWhileLocked(prop) then
+      animate(m, { [name] = value }, { duration = 0 }) -- applied when combat ends
+    else
+      prop.write(m, value)
+    end
+  end
 end
 
 -- Jumps to values immediately and stops those properties.
 function Motion:set(values)
-  self.isLocked = locked(self)
-  for name, value in pairs(values) do
-    local prop = propOf(self, name) or error("Polymorph: unknown property " .. tostring(name), 2)
-    takeOver(self, name)
-    local t = self.tracks[name]
-    if t and t.native then t.native.ag:Stop() end
-    self.tracks[name] = nil
-    release(self, name)
-    if self.isLocked and waitsWhileLocked(prop) then
-      self:to({ [name] = value }, { duration = 0 }) -- applied when combat ends
-    else
-      prop.write(self, value)
-    end
-  end
-  return self
+  return work(self, set, values)
 end
 
--- Stops one property, or all of them, where they are.
+local function stop(m, name)
+  if not name or LAYOUT_FIELD[name] then syncAnchors(m) end
+  if not name then
+    takeVisibility(m)
+    m.awayKeys = nil
+  end
+  -- Native tweens stop where they draw.
+  for n in pairs(name and { [name] = true } or m.tracks) do
+    local t = m.tracks[n]
+    takeOver(m, n)
+    if t and t.native then freezeNative(m, n, t) end
+    m.tracks[n] = nil
+    release(m, n)
+  end
+end
+
+-- Stops one property where it is. With no name, stops every property and
+-- cancels a running show() or hide(), so Hide() is never called.
 function Motion:stop(name)
-  if name then
-    local t = self.tracks[name]
-    takeOver(self, name)
-    if t and t.native then freezeNative(self, name, t) end
-    self.tracks[name] = nil
-    release(self, name)
-  else
-    for n, t in pairs(self.tracks) do
-      takeOver(self, n)
-      if t.native then freezeNative(self, n, t) end
-      self.tracks[n] = nil
-    end
-    self.awayKeys = nil
-  end
-  return self
+  return work(self, stop, name)
 end
 
+-- get() and isMoving() answer at once. While Polymorph works on the frame,
+-- they answer from that work's state, and get() leaves the anchors unchecked.
 function Motion:get(name)
+  if LAYOUT_FIELD[name] and not self.busy then work(self, syncAnchors) end
   local t = self.tracks[name]
   if t and t.native then
     local value, velocity = nativeState(t)
@@ -822,36 +1080,42 @@ Poly.presets = {
 
 local function resolveAway(away)
   if type(away) == "table" then return away end
-  return Poly.presets[away or "fade"] or error("Polymorph: unknown preset " .. tostring(away), 3)
+  return Poly.presets[away or "fade"] or error("Polymorph: unknown preset " .. tostring(away), 0)
 end
 
--- Work the game blocks on protected frames in combat, run once combat ends.
-local afterCombat = {}
 local combatWatch = Poly._combatWatch or CreateFrame("Frame")
 Poly._combatWatch = combatWatch
 combatWatch:RegisterEvent("PLAYER_REGEN_ENABLED")
 combatWatch:SetScript("OnEvent", function()
   for m in pairs(puppeted) do
     m.isLocked = false
-    commit(m)
+    -- commit checks the anchors: a secure header may have moved the frame in combat.
+    try(m, work, m, commit)
   end
   for m, fn in pairs(afterCombat) do
     afterCombat[m] = nil
-    fn()
+    try(nil, fn)
   end
 end)
 
-function Motion:restAt(values)
-  for name, value in pairs(values) do self.rest[name] = value end
-  return self
+local function restAt(m, values)
+  for name, value in pairs(values) do m.rest[name] = value end
 end
 
--- Every show() and hide() replaces the previous one: it bumps the token, which
--- cancels a running hide's Hide(), and it clears any action deferred to combat end.
-local function takeVisibility(m)
-  m.visibilityToken = m.visibilityToken + 1
+function Motion:restAt(values)
+  return work(self, restAt, values)
+end
+
+-- Every show() and hide() replaces the previous one: it takes a new token,
+-- which cancels a running hide's Hide(), and it clears any action deferred to
+-- combat end. Tokens are never reused, so a hide's finish from before a halt
+-- can't match the token the rebuilt motion starts with.
+local lastToken = 0
+function takeVisibility(m)
+  lastToken = lastToken + 1
+  m.visibilityToken = lastToken
   afterCombat[m] = nil
-  return m.visibilityToken
+  return lastToken
 end
 
 -- Rest values for the `away` properties and every property show()/hide() own.
@@ -862,57 +1126,67 @@ local function restingTargets(m, away)
   return targets
 end
 
+local function show(m, away, opts)
+  away = resolveAway(away)
+  takeVisibility(m)
+  local frame = m.frame
+  if not frame:IsShown() then
+    if locked(m) then
+      afterCombat[m] = function() work(m, show, away, opts) end
+      return
+    end
+    set(m, away)
+    frame:Show()
+  end
+  animate(m, restingTargets(m, away), opts, "show")
+end
+
 -- Shows the frame from `away` (preset name or values) and animates to rest.
 -- While a hide is running, show() cancels it and turns the frame around,
 -- returning every property that hide was moving.
 function Motion:show(away, opts)
-  away = resolveAway(away)
-  takeVisibility(self)
-  local frame = self.frame
-  if not frame:IsShown() then
-    if locked(self) then
-      afterCombat[self] = function() self:show(away, opts) end
-      return self
-    end
-    self:set(away)
-    frame:Show()
-  end
-  return animate(self, restingTargets(self, away), opts, "show")
+  return work(self, show, away, opts)
 end
 
--- Animates to `away`, then hides the frame and resets it to rest while hidden.
--- On a protected frame in combat the fade still plays, and Hide() waits for
--- combat to end. The frame takes clicks until then.
-function Motion:hide(away, opts)
+local function hide(m, away, opts)
   away = resolveAway(away)
   opts = opts or {}
-  local token = takeVisibility(self)
+  local token = takeVisibility(m)
   local userDone = opts.onComplete
-  local function finish()
-    if self.visibilityToken ~= token then return end
-    if locked(self) then
-      afterCombat[self] = finish
+  local finish
+  local function hideNow()
+    if m.visibilityToken ~= token then return end
+    if locked(m) then
+      afterCombat[m] = finish
       return
     end
-    self.frame:Hide()
+    m.frame:Hide()
     -- Only what show()/hide() still own. set() releases each one it resets.
-    self:set(restingTargets(self, {}))
-    if userDone then userDone(self.frame) end
+    set(m, restingTargets(m, {}))
+    if userDone then userDone(m.frame) end
   end
+  function finish() work(m, hideNow) end
   local copy = {}
   for k, v in pairs(opts) do copy[k] = v end
   copy.onComplete = finish
   -- Locked: animate only what the game allows (alpha, and x/y/scale via the puppet).
   -- The rest would wait for combat to end, and a fading frame does not need it.
   local targets = away
-  if locked(self) then
+  if locked(m) then
     targets = {}
     for name, value in pairs(away) do
-      if not waitsWhileLocked(propOf(self, name)) then targets[name] = value end
+      if not waitsWhileLocked(propOf(m, name)) then targets[name] = value end
     end
-    if next(targets) == nil then finish() return self end
+    if next(targets) == nil then return hideNow() end
   end
-  return animate(self, targets, copy, "hide")
+  animate(m, targets, copy, "hide")
+end
+
+-- Animates to `away`, then hides the frame and resets it to rest while hidden.
+-- On a protected frame in combat the fade still plays, and Hide() waits for
+-- combat to end. The frame takes clicks until then.
+function Motion:hide(away, opts)
+  return work(self, hide, away, opts)
 end
 
 setmetatable(Poly, { __call = function(_, frame) return motionFor(frame) end })

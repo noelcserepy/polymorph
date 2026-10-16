@@ -55,6 +55,7 @@ function Region:SetPoint(point, a, b, c, d)
 end
 function Region:SetAllPoints(rel) self:SetPoint("TOPLEFT", rel or self.parent, "TOPLEFT", 0, 0) end
 function Region:GetPoint() if self.point then return unpack(self.point, 1, 5) end end
+function Region:GetNumPoints() return self.point and 1 or 0 end
 function Region:Show() guard(self, "Show"); self.shown = true end
 function Region:Hide() guard(self, "Hide"); self.shown = false end
 function Region:SetShown(v) if v then self:Show() else self:Hide() end end
@@ -190,6 +191,8 @@ function Region:Rect()
   return l, b, w, h
 end
 function InCombatLockdown() return combat end
+-- Polymorph reports errors it catches here, and they fail the check.
+function geterrorhandler() return function(err) violations[#violations + 1] = tostring(err) end end
 function debugprofilestop() return os.clock() * 1000 end
 function GetTime() return now end
 function GetTickTime() return tick end
@@ -238,7 +241,8 @@ local function check(name, fn)
   violations = {}
   combat = false
   local ok, err = pcall(fn)
-  if ok and #violations > 0 then ok, err = false, violations[1] end
+  -- A reported error came before whatever failed after it, so it is the cause.
+  if #violations > 0 then ok, err = false, violations[1] end
   results[#results + 1] = { name = name, ok = ok, err = err }
 end
 local function newFrame(template)

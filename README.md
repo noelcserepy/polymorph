@@ -60,13 +60,17 @@ To copy it in by hand, `Polymorph.lua` and `lib.xml` are all you need, plus LibS
 | Property | What it changes | Notes |
 | --- | --- | --- |
 | `alpha` | `SetAlpha` | Clamped to 0..1. |
-| `x`, `y` | `SetPoint` offsets | Offsets from the frame's first anchor, as it was when Polymorph first touched the frame. |
+| `x`, `y` | `SetPoint` offsets | Moves every anchor of the frame by the same offset. Anchors that other code sets between animations become the frame's home. |
 | `width`, `height` | `SetWidth`, `SetHeight` | One `SetSize` when both move. |
 | `scale` | `SetScale` | Scale also scales anchor offsets. To grow around the center, anchor the frame at offset 0 inside a holder. |
 
 Animate several properties in one call. Each one moves on its own track.
 
 `Poly()` takes frames, textures and font strings. Combat rules follow each one's own `IsProtected()`. On a `SecureActionButtonTemplate` button, its texture and font string report `IsProtected()` false before and during combat. Layout and visibility calls on its texture in combat raised 0 blocked actions. Font-string layout and visibility calls in combat have not been measured yet.
+
+Layouts, frame pools and frame movers, such as AceGUI-3.0, ScrollBox, `CreateFramePool` and LibWindow-1.1, write to the same frames. [Using Polymorph with other code](docs/api.md#using-polymorph-with-other-code) says how Polymorph shares a frame with them: anchors, pools, two-anchor frames, and alpha that a fader also writes.
+
+An error on one frame, from a game call or an `onComplete`, reaches the game's error handler once. Every other frame keeps animating.
 
 ### Your own values
 

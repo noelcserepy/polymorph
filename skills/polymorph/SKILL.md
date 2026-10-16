@@ -41,8 +41,8 @@ Copied by hand, `Polymorph.lua` and `lib.xml` are all it needs, plus LibStub.
 
 Each rule prevents a bug that is easy to write and hard to see.
 
-1. **Anchor first.** `x` and `y` are offsets from the frame's first anchor as it was when `Poly(frame)` first ran. Call `SetPoint` before the first `Poly(frame)`, then move the frame only through Polymorph. A later `SetPoint` of your own is overwritten the next time Polymorph moves `x` or `y`.
-2. **One writer per property.** While Polymorph animates `alpha`, `x`, `y`, `width`, `height` or `scale`, change that property through `m:to()` or `m:set()`, never with `SetAlpha`, `SetPoint`, `SetSize` or `SetScale`. `m:set()` jumps there and stops the animation.
+1. **Anchor with `SetPoint`, move with `x` and `y`.** `x` and `y` add an offset to every anchor of the frame, so `x = 0, y = 0` is where its anchors put it, and a frame with two anchors slides whole. A frame with no anchors doesn't move. Any code may re-anchor the frame: a layout, a pool, a drag. Polymorph never overwrites that. The new anchors become home, with `x` and `y` at 0, and a slide in progress stops there.
+2. **One writer per property.** While Polymorph animates `alpha`, `x`, `y`, `width`, `height` or `scale`, change that property through `m:to()` or `m:set()`, never with `SetAlpha`, `SetPoint`, `SetSize` or `SetScale`. `m:set()` jumps there and stops the animation. Another fader on the same frame, such as `UIFrameFadeIn` or oUF's range fade, fights Polymorph's alpha. Animate a child frame instead.
 3. **`show()` and `hide()` instead of `Show()` and `Hide()`** for any frame that should animate in or out. `hide()` animates, then calls `Hide()` and resets the frame to rest while hidden, so a later plain `Show()` still looks right. `show()` during a running `hide()` turns the frame around. `show()` comes in from `away` only when the frame is hidden. On a shown frame it just returns the `away` properties to rest. A new frame from `CreateFrame` is shown, so call its `Hide()` once at creation.
 4. **Read through Polymorph.** `m:get("x")` returns the drawn value. `GetPoint()`, `GetLeft()`, `GetScale()` and `GetAlpha()` miss the game's own animations, which Polymorph uses in combat and for native tweens. A native tween starts on the next frame. From then on they already return the final value.
 5. **Scale grows around the anchor point and scales the anchor offset.** To grow a button around its center, anchor it by `"CENTER"` at offset 0 inside a holder frame, position the holder, and animate the button's `scale`.
@@ -53,8 +53,9 @@ Each rule prevents a bug that is easy to write and hard to see.
    - `hide()` fades now and calls `Hide()` when combat ends. The faded frame still takes clicks until then.
 
    Your own code must not call those functions in combat either. Let Polymorph do it.
-7. **`onComplete` belongs to one call.** It runs once, after every property in that call has arrived. If a later `to()`, `set()` or `stop()` takes over one of its properties, it never runs. `hide()` is the exception: it finishes once the properties it still owns arrive.
+7. **`onComplete` belongs to one call.** It runs once, after every property in that call has arrived. If a later `to()`, `set()` or `stop()` takes over one of its properties, it never runs. `hide()` is the exception: it finishes once the properties it still owns arrive. Only a later `show()`, `hide()` or `stop()` with no name cancels it, or a game call on that frame that throws. An error in `onComplete` goes to the game's error handler and stops nothing else. After a game call throws, Polymorph starts that frame over as if it met the frame then: every animation and queued call on it is dropped, its rest values stay, and `x` and `y` read 0 where it stopped.
 8. **Anything else goes through `define()`.** For a color, a number or typed-out text, define your own values on the handle once, at creation, and then animate them with `to()` like any property. Defining a name again replaces its writer and keeps its current value. Polymorph calls your writer once per update with every value defined on the handle, and `set()` calls it at once. It calls it in combat too, so the writer must never call `SetPoint`, `SetSize`, `SetScale`, `Show` or `Hide`. Use it for calls like `SetText`, `SetVertexColor`, `SetTextColor` and `SetAlphaGradient`. Don't start animations from a writer. Format numbers with `"%.0f"`, because WoW's `"%d"` errors above 2^31. A value finishes within 0.001 of its target. For a number shown whole, pass `{ precision = 0.5 }` as the third argument. Otherwise the counter keeps running for 0.63 s after its digits stop, and `onComplete` waits that long.
+9. **Calls from hooks wait.** A call on a frame that arrives while Polymorph is working on that same frame, such as from a `hooksecurefunc` on its `SetPoint` or from an `ease` function, runs right after that work finishes, so the call made last wins. `get()` and `isMoving()` answer at once.
 
 ## API
 
@@ -63,7 +64,7 @@ Each rule prevents a bug that is easy to write and hard to see.
 | `Poly(frame)` | The frame's handle, the same one every time. Every method returns it, so calls chain. |
 | `m:to(targets, opts)` | Animates each property in `targets`. |
 | `m:set(values)` | Jumps to the values and stops those properties. |
-| `m:stop(name)` | Stops one property where it is, or all of them when `name` is nil. |
+| `m:stop(name)` | Stops one property where it is. With no `name`, stops all of them and cancels a running `show()` or `hide()`, which then never calls `Hide()`. |
 | `m:get(name)` | `value, velocity, target`. `target` is nil when the property is still. |
 | `m:isMoving(name)` | True while the property moves, or any property with no `name`. |
 | `m:show(away, opts)` | Shows the frame and animates from `away` to rest. |
@@ -183,6 +184,20 @@ C_Timer.After(0, function()
   m:set({ shown = 0 }):to({ shown = length }, { duration = length / 40, ease = "linear",
     onComplete = function() fs:ClearAlphaGradient() end })
 end)
+```
+
+**Pooled rows.** A pool gives the same frame to the next owner. Let a row leave with `hide()` and release it in `onComplete`. Also stop it in the pool's resetter, so a `hide()` still running can't hide the row's next owner.
+
+```lua
+local pool = CreateFramePool("Frame", list, nil, function(_, row)
+  Poly(row):stop()
+  row:Hide()
+  row:ClearAllPoints()
+end)
+
+local function removeRow(row)
+  Poly(row):hide("left", { onComplete = function() pool:Release(row) end })
+end
 ```
 
 **Steps in order.** Start the next step from `onComplete`.
