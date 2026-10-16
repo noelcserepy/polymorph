@@ -2,6 +2,12 @@
 
 # Polymorph
 
+[![Tests](https://img.shields.io/github/actions/workflow/status/noelcserepy/polymorph/test.yml?branch=main&label=tests)](https://github.com/noelcserepy/polymorph/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/noelcserepy/polymorph?include_prereleases&label=release)](https://github.com/noelcserepy/polymorph/releases)
+[![Tested on WoW Forever](https://img.shields.io/badge/tested%20on-WoW%20Forever%201.60.1-1f6feb)](#install)
+[![Lua 5.1](https://img.shields.io/badge/Lua-5.1-000080)](https://www.lua.org/manual/5.1/)
+[![License: MIT](https://img.shields.io/github/license/noelcserepy/polymorph)](LICENSE)
+
 Target-state animation for World of Warcraft addons. Springs, tweens and retargeting, with combat lockdown handled for you.
 
 ```lua
@@ -16,7 +22,7 @@ Poly(panel):hide("below")                                      -- animate out, t
 
 A damage meter built with Polymorph. Each bar tweens to its new amount on every update, and rows move to their new rank with an `inOutCubic` tween.
 
-> **Status: early.** Version 0.1, tested on the WoW Forever beta (1.60.1, interface 16001). Other game versions are untested. The API may still change.
+> **Status: early.** Version 0.1, built for WoW Forever and tested only on its beta (1.60.1, interface 16001). It probably works on retail too, but nobody has tested it there yet. The API may still change.
 
 ## Why
 
