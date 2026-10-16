@@ -1536,18 +1536,17 @@ test("a puppet whose setup threw once draws the next slide", function()
   end
 end)
 
-test("a set() from a group's Stop hook during a halt draws after the halt", function()
-  local f = fakeFrame(true)
-  local m = Poly(f)
+test("a call from a Stop hook during a halt is dropped, so it can't halt the frame again", function()
+  local f = fakeFrame()
+  local m, armed, stops = Poly(f), false, 0
   local create = f.CreateAnimationGroup
-  local enabled, once = false, false
   function f:CreateAnimationGroup()
     local ag = create(self)
     local stop = ag.Stop
     function ag:Stop()
       stop(self)
-      if enabled and not once then
-        once = true
+      if armed then
+        stops = stops + 1
         m:set({ x = 70 })
       end
     end
@@ -1556,21 +1555,17 @@ test("a set() from a group's Stop hook during a halt draws after the halt", func
   m:to({ alpha = 0.5 }, { duration = 1, ease = "linear" })
   run(0.1)
   m:stop("alpha")
-  combat = true
-  local setAlpha = f.SetAlpha
-  function f:SetAlpha() error("test: alpha hook") end
-  enabled = true
-  m:to({ alpha = 0.2 }, { duration = 0.1 })
+  local setPoint = f.SetPoint
+  function f:SetPoint() error("test: anchor family connection") end
+  armed = true
+  m:to({ x = 100 })
   run(1 / 60)
   takeReports(1)
-  f.SetAlpha = setAlpha
-  assert(once and f:VisualX() == 80 and m:get("x") == 70, "halt stopped the replacement's drawing")
-  m:set({ x = 80 })
-  assert(f:VisualX() == 90, "a later set() didn't draw")
-  combat = false
-  fire("PLAYER_REGEN_ENABLED")
-  run(1 / 60)
-  assert(f.points[1][4] == 90 and f:VisualX() == 90, "combat end lost the position")
+  armed, f.SetPoint = false, setPoint
+  assert(stops == 1, "the halt stopped its groups " .. stops .. " times")
+  assert(m:get("x") == 0 and not m:isMoving(), "the hook's set() ran after the halt")
+  m:set({ x = 20 })
+  assert(m:get("x") == 20, "a later set() didn't land")
 end)
 
 test("a slide started from a Stop hook during an anchor takeover keeps going", function()
@@ -1801,7 +1796,10 @@ test("reentrant hooks on animation writers keep the last call", function()
       combat = false
       fire("PLAYER_REGEN_ENABLED")
       run(0.5)
-      if nested then
+      if nested and path == "halt" then
+        assert(done == 0 and not m:isMoving() and m:get("x") == 0 and m:get("y") == 0,
+          path .. "/" .. writer .. ": a call from a Stop hook during a halt ran")
+      elseif nested then
         local label = path .. "/" .. writer
         local homeX, homeY = path == "adopt native" and 200 or 10, path == "adopt native" and 90 or 20
         assert(near(f:VisualX(), (homeX + 70) * 1.3) and near(f:VisualY(), (homeY + 45) * 1.3) and f.s == 1.3, label .. ": last layout call lost " .. f:VisualX() .. ", " .. f:VisualY() .. ", " .. f.s .. ", get " .. m:get("x") .. ", " .. m:get("y"))
