@@ -964,7 +964,11 @@ test("an error on one frame stops that frame only, and is reported once", functi
   Poly(badNative):to({ x = 50 }, { duration = 0.2, ease = "linear", onComplete = count }) -- starts from the timer
   Poly(good):to({ x = 50 }, { onComplete = function() error("onComplete failed") end })
   Poly(good):to({ alpha = 0 }, { duration = 0.5, ease = "linear" })
+  run(1 / 60)
+  local badAlpha = bad.alpha
+  assert(not Poly(bad):isMoving() and badAlpha > 0, "the failing frame kept its tracks")
   run(2)
+  assert(bad.alpha == badAlpha, "the failing frame kept drawing")
   assert(#reported == 3, "reported " .. #reported .. " times")
   table.sort(reported)
   assert(reported[1]:find("anchor family") and reported[2]:find("anchor family") and reported[3]:find("onComplete failed"))
@@ -1566,6 +1570,52 @@ test("a call from a Stop hook during a halt is dropped, so it can't halt the fra
   assert(m:get("x") == 0 and not m:isMoving(), "the hook's set() ran after the halt")
   m:set({ x = 20 })
   assert(m:get("x") == 20, "a later set() didn't land")
+end)
+
+test("a halt of another frame from a Stop hook keeps this frame's calls dropped", function()
+  local f, g = fakeFrame(), fakeFrame()
+  local m, n = Poly(f), Poly(g)
+  local armed, stops = false, 0
+  local create = f.CreateAnimationGroup
+  function f:CreateAnimationGroup()
+    local ag = create(self)
+    local stop = ag.Stop
+    function ag:Stop()
+      stop(self)
+      if armed and stops < 10 then
+        stops = stops + 1
+        pcall(n.set, n, { x = 1 })
+        m:set({ x = 70 })
+      end
+    end
+    return ag
+  end
+  m:to({ alpha = 0.5 }, { duration = 1, ease = "linear" })
+  run(0.1)
+  m:stop("alpha")
+  function f:SetPoint() error("test: f anchor") end
+  function g:SetPoint() error("test: g anchor") end
+  armed = true
+  assert(not pcall(m.set, m, { x = 100 }))
+  assert(stops == 1, "cleanup ran " .. stops .. " times")
+  reported = {}
+end)
+
+test("a halt finishes when the frame's anchor getter keeps throwing", function()
+  for _, getter in ipairs({ "GetPoint", "GetNumPoints" }) do
+    local f = fakeFrame()
+    local m = Poly(f)
+    m:to({ x = 100 }, { duration = 0.1 })
+    local original = f[getter]
+    f[getter] = function() error("test: getter") end
+    run(0.2)
+    takeReports(1)
+    f[getter] = original
+    assert(not m:isMoving(), getter .. ": the halted frame kept its track")
+    m:to({ x = 20 }, { duration = 0.1 })
+    run(0.5)
+    assert(m:get("x") == 20 and not m:isMoving(), getter .. ": the frame didn't animate again")
+  end
 end)
 
 test("a slide started from a Stop hook during an anchor takeover keeps going", function()
