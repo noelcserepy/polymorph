@@ -4,7 +4,7 @@ Rules for the pr-reviewer runs on this repository's pull requests, read from the
 
 Nothing in this repository touches real state, the network, or the game. Run whatever helps you reproduce a finding.
 
-- Tests on Lua 5.1, the version WoW runs: `~/.local/lua51/bin/lua tests/core_test.lua Polymorph.lua`. Syntax check: `~/.local/lua51/bin/luac -p Polymorph.lua`. The host's plain `lua` is 5.5, newer than the 5.4 that CI also runs. Treat a failure only it shows as a portability note, and prove real bugs on 5.1.
+- Checks: `sh tools/check.sh` finds Lua 5.1 and also runs plain `lua`. Use `sh tools/check.sh LUA...` for specific interpreters. The host's plain `lua` is 5.5, newer than the 5.4 that CI also runs. Treat a failure only it shows as a portability note, and prove real bugs on 5.1.
 - Probes: write a script in a temp directory outside the tree. Copy the fakes at the top of `tests/core_test.lua` (`CreateFrame`, `InCombatLockdown`, `fakeFrame`, `run`, `fire`), load the library with `loadfile("Polymorph.lua")("Polymorph", { dev = true })`, and drive the calls in question. A probe that shows wrong behavior on 5.1 makes a Finding.
 - Mutation checks: break the code a new test claims to cover, rerun the tests on 5.1, and restore the file.
 
