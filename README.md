@@ -20,6 +20,8 @@ Poly(frame):to({ width = 300 }, { duration = 0.25, ease = "outCubic" })
 Poly(panel):hide("below")                                      -- animate out, then Hide()
 ```
 
+New to Polymorph? The [crash course](docs/guide.md) shows which call to use when, with examples.
+
 ## Change the target whenever you like
 
 Call `:to()` again at any time, and the frame continues from where it is. A spring keeps its speed when the target changes, so a frame that follows the mouse, a bar that grows on every event, or a panel that opens and closes quickly never jumps.
@@ -157,7 +159,7 @@ Tweens of `alpha`, `x` or `y` with `linear`, `inSine`, `outSine` or `inOutSine` 
 
 ## Reference
 
-[`docs/api.md`](docs/api.md) has every function, option and preset.
+[`docs/guide.md`](docs/guide.md) is a crash course: which call to use when, with examples. [`docs/api.md`](docs/api.md) has every function, option and preset.
 
 ## For coding agents
 
