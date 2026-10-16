@@ -66,7 +66,7 @@ To copy it in by hand, `Polymorph.lua` and `lib.xml` are all you need, plus LibS
 
 Animate several properties in one call. Each one moves on its own track.
 
-`Poly()` takes frames, textures and font strings. Combat rules follow each one's own `IsProtected()`. On a `SecureActionButtonTemplate` button, its texture and font string report `IsProtected()` false before and during combat. Layout and visibility calls on its texture in combat raised 0 blocked actions. Font-string layout and visibility calls in combat have not been measured yet.
+`Poly()` takes frames, textures and font strings. Combat rules follow each one's own `IsProtected()`. On a `SecureActionButtonTemplate` button, its texture and font string report `IsProtected()` false before and during combat. Layout and visibility calls on its texture and its font string in combat raised 0 blocked actions.
 
 ### Your own values
 
