@@ -1558,6 +1558,51 @@ local function hookHaltCalls(f, source, hook)
   end
 end
 
+test("error(false) and error(nil) fail like any error", function()
+  for _, value in ipairs({ false, "nil" }) do
+    if value == "nil" then value = nil end
+    local function fail() error(value) end
+    -- A public call raises it.
+    local m = Poly(fakeFrame())
+    m:define({ n = 0 }, fail)
+    assert(not pcall(m.set, m, { n = 1 }), tostring(value) .. ": the public call succeeded")
+    -- A game entry reports it: here the start timer's SetAlpha.
+    local f = fakeFrame()
+    Poly(f):to({ alpha = 0.2 }, { duration = 0.2, ease = "linear" })
+    f.SetAlpha = fail
+    run(2 / 60)
+    takeReports(1)
+    -- A call that waited reports it.
+    local g = fakeFrame()
+    local w = Poly(g)
+    w:define({ n = 0 }, fail)
+    local setAlpha = g.SetAlpha
+    function g:SetAlpha(a) setAlpha(self, a); w:set({ n = 1 }) end
+    w:set({ alpha = 0.5 })
+    takeReports(1)
+    assert(not Poly(f):isMoving() and not w:isMoving(), tostring(value) .. ": a failed frame kept moving")
+  end
+end)
+
+test("a call from a lock-check hook in the driver waits for the update", function()
+  local f = fakeFrame(true)
+  local m, order = Poly(f), {}
+  m:to({ x = 50 })
+  run(1 / 60)
+  combat = true
+  local isProtected, setPoint = f.IsProtected, f.SetPoint
+  local armed = true
+  function f:IsProtected()
+    if armed then armed = false; m:set({ alpha = 0.5 }); order[#order + 1] = "check" end
+    return isProtected(self)
+  end
+  function f:SetAlpha(a) order[#order + 1] = "alpha"; self.alpha = a end
+  run(1 / 60)
+  combat = false
+  f.IsProtected, f.SetPoint = isProtected, setPoint
+  assert(order[1] == "check" and order[2] == "alpha", "the hook's call ran inside the lock check")
+end)
+
 test("a lock check that throws at a native start halts that frame only", function()
   local f, g = fakeFrame(true), fakeFrame(true)
   Poly(f):to({ alpha = 0.2 }, { duration = 0.2, ease = "linear" })

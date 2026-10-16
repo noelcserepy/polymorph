@@ -437,13 +437,15 @@ end
 local function caught(err) return err end
 local function report(err) geterrorhandler()(err) end
 
--- Runs fn(m, a, b, c). If it throws, m starts over and the error is returned.
+-- Runs fn(m, a, b, c). If it throws, m starts over, and it returns true and
+-- the error. A failure is the status, never the error's value: error(false)
+-- fails too.
 local function guarded(m, fn, a, b, c)
   tryFn, tryA, tryB, tryC, tryD = fn, m, a, b, c
   local ok, err = xpcall(callTry, caught)
-  if ok then return end
+  if ok then return false end
   halt(m)
-  return err
+  return true, err
 end
 
 -- Runs a callback, which owns no frame: an error is only reported.
@@ -476,15 +478,15 @@ local function runWaiting(m)
       return report("Polymorph: hooks on this frame keep calling Polymorph")
     end
     local c = q[i]
-    local err = guarded(m, c[1], c[2], c[3], c[4])
-    if err then return report(err) end
+    local failed, err = guarded(m, c[1], c[2], c[3], c[4])
+    if failed then return report(err) end
     i = i + 1
   end
   if m.waiting == q then m.busy, m.waiting = nil, nil end
 end
 
--- Runs fn(m, a, b, c) as work on m, or queues it while m is busy. Returns the
--- error if the work threw.
+-- Runs fn(m, a, b, c) as work on m, or queues it while m is busy. Returns true
+-- and the error if the work threw.
 local function attempt(m, fn, a, b, c)
   if halting[m] then return end
   if m.busy or m == driving then
@@ -495,38 +497,38 @@ local function attempt(m, fn, a, b, c)
     return
   end
   m.busy = true
-  local err = guarded(m, fn, a, b, c)
-  if err then return err end
+  local failed, err = guarded(m, fn, a, b, c)
+  if failed then return true, err end
   if m.waiting then runWaiting(m) else m.busy = nil end
 end
 
 -- Work for a public call: an error goes on to the caller.
 local function work(m, fn, a, b, c)
-  local err = attempt(m, fn, a, b, c)
-  if err then error(err, 0) end
+  local failed, err = attempt(m, fn, a, b, c)
+  if failed then error(err, 0) end
   return m
 end
 
 -- Work the game calls in for: a timer, an event, an animation's OnFinished.
 local function enter(m, fn, a, b, c)
-  local err = attempt(m, fn, a, b, c)
-  if err then report(err) end
+  local failed, err = attempt(m, fn, a, b, c)
+  if failed then report(err) end
 end
 
 -- Stops every group of the frame. A Stop() that throws, from a hook on it,
 -- doesn't leave the others drawing: each runs, then the first error is reported.
 local function stopGroups(m)
-  local err
+  local failed, err = false, nil
   for _, ch in pairs(channels[m] or {}) do
     local ok, e = pcall(ch.ag.Stop, ch.ag)
-    if not ok then err = err or e end
+    if not ok and not failed then failed, err = true, e end
   end
   local p = puppets[m]
   if p then
     local ok, e = pcall(p.ag.Stop, p.ag)
-    if not ok then err = err or e end
+    if not ok and not failed then failed, err = true, e end
   end
-  if err then report(err) end
+  if failed then report(err) end
 end
 
 -- A frame whose work threw starts over, so the error doesn't repeat and
@@ -559,7 +561,7 @@ local function stepAll()
   local now = lastStep
   local m = stepping or next(active)
   while m do
-    stepping = m
+    stepping, driving = m, m
     -- Checked every frame: combat can start in the middle of an animation.
     local isLocked = inCombat and m.frame:IsProtected() or false
     m.isLocked = isLocked
@@ -567,7 +569,6 @@ local function stepAll()
     -- one define()) stage their values, and each writer runs once after the loop.
     local flushCount = 0
     local stepped, arrived = false, false
-    driving = m
     for name, t in pairs(m.tracks) do
       tracks = tracks + 1
       local prop = t.prop
