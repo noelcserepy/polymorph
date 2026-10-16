@@ -1200,6 +1200,24 @@ test("a halted frame recovers through its public handle on every halt path", fun
   assertStartedOver(m, f, "driver in combat")
 end)
 
+test("a halted frame keeps the values define() made, where they stopped", function()
+  local f = fakeFrame()
+  local m, drawn = Poly(f), nil
+  m:define({ n = 0 }, function(_, v) drawn = v.n end)
+  m:to({ n = 10 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  local restore = breakSetPoint(f)
+  m:to({ x = 40 })
+  run(1 / 60)
+  takeReports(1)
+  restore()
+  local stopped = m:get("n")
+  assert(not m:isMoving() and stopped > 0 and stopped < 10, "n did not stop where it was: " .. stopped)
+  m:to({ n = 20 }, { duration = 0.2, ease = "linear" })
+  run(0.5)
+  assert(drawn == 20 and m:get("n") == 20, "the defined value did not animate after the halt")
+end)
+
 test("a resize retargeted inside its final writer reaches the replacement", function()
   for _, writer in ipairs({ "SetWidth", "SetHeight", "SetSize" }) do
     local f = fakeFrame()
@@ -1615,6 +1633,93 @@ test("a call that waited for a frame follows the error rules", function()
   assert(not pcall(n.set, n, { colour = 1 }), "an unknown property didn't raise")
   n:set({ alpha = 0.5 })
   assert(near(g.alpha, 0.5, 1 / 510), "the frame stopped taking calls after an error")
+end)
+
+test("an argument error names the caller's line, also from a hook while the frame is busy", function()
+  local f = fakeFrame()
+  local m = Poly(f)
+  local function raisesHere(call, message)
+    local ok, err = pcall(call)
+    assert(not ok and tostring(err):find("core_test%.lua:%d+: Polymorph: " .. message), "error points elsewhere: " .. tostring(err))
+  end
+  raisesHere(function() m:to({ colour = 1 }) end, "unknown property colour")
+  raisesHere(function() m:to({ alpha = 1 }, { duration = 1, ease = "bounce" }) end, "unknown ease bounce")
+  raisesHere(function() m:to({ alpha = 1 }, { spring = "boing" }) end, "unknown spring boing")
+  raisesHere(function() m:set({ colour = 1 }) end, "unknown property colour")
+  raisesHere(function() m:show("spin") end, "unknown preset spin")
+  raisesHere(function() m:hide({ colour = 0 }) end, "unknown property colour")
+  local setAlpha, checked = f.SetAlpha, false
+  function f:SetAlpha(v)
+    setAlpha(self, v)
+    if not checked then
+      checked = true
+      raisesHere(function() m:to({ colour = 1 }) end, "unknown property colour")
+    end
+  end
+  m:set({ alpha = 0.5 })
+  assert(checked and not m:isMoving(), "the hook's call did not raise at once")
+end)
+
+-- Polymorph's own animation groups with a hook on Stop() that throws.
+local function throwOnStop(f, armed)
+  local create = f.CreateAnimationGroup
+  function f:CreateAnimationGroup()
+    local ag = create(self)
+    local stop = ag.Stop
+    function ag:Stop()
+      stop(self)
+      if armed() then error("Stop hook failure") end
+    end
+    return ag
+  end
+end
+
+test("an error in a native finish or a public call starts the frame over", function()
+  for _, path in ipairs({ "native finish", "get" }) do
+    local f = fakeFrame()
+    local m = Poly(f)
+    throwOnStop(f, function() return true end)
+    m:to({ x = 100 }, { duration = 0.1, ease = "linear" })
+    run(0.05)
+    f:SetPoint("CENTER", nil, "CENTER", 500, 90) -- a layout takes the slide over
+    if path == "get" then
+      assert(not pcall(m.get, m, "x"), "get: the error didn't reach the caller")
+      takeReports(1) -- the halt's own Stop()
+    else
+      run(0.2)
+      takeReports(2)
+    end
+    run(1)
+    assert(not m:isMoving() and m:get("x") == 0 and f:VisualX() == 500, path .. ": the slide survived the takeover")
+  end
+end)
+
+test("an error in hide()'s onComplete stops nothing", function()
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:to({ x = 50 }, { duration = 1, ease = "linear" })
+  m:hide("fade", { duration = 0.1, onComplete = function() error("onComplete failed") end })
+  run(0.3)
+  takeReports(1)
+  assert(not f.shown and m:isMoving("x"), "the error stopped the slide")
+  run(1)
+  assert(f.points[1][4] == 60 and not m:isMoving(), "the slide did not finish")
+end)
+
+test("a halt stops every group even when a Stop() hook throws", function()
+  local f = fakeFrame(true)
+  local m, armed = Poly(f), false
+  throwOnStop(f, function() return armed end)
+  m:to({ x = 100, y = 60, alpha = 0.5 }, { duration = 2, ease = "linear" })
+  run(0.05)
+  combat, armed = true, true
+  m:to({ scale = 1.2 }) -- the puppet takes x and y over, and stopping their groups throws
+  run(1 / 60)
+  takeReports(2)
+  armed = false
+  local nx, ny, k, _, drawnAlpha = f:Native()
+  assert(nx == 0 and ny == 0 and k == 1 and drawnAlpha == nil and not m:isMoving(), "halt left a group drawing")
+  combat = false
 end)
 
 test("reentrant hooks on animation writers keep the last call", function()

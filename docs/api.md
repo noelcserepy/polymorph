@@ -30,7 +30,7 @@ A property is finished when it's within its precision of the target. For springs
 
 The client stores alpha in steps of 1/255. Measured in WoW Forever 1.60.1, `SetAlpha(0.5)` reads back as 0.50196. So `m:get("alpha")` on a still frame can differ from the value you set by up to 0.002. While alpha moves, `get()` returns Polymorph's own value.
 
-Unknown property names raise an error. To animate anything else, such as a color, a number or how much text shows, define your own values with [`m:define()`](#mdefinevalues-write-opts).
+Unknown property names raise an error at the line that made the call. To animate anything else, such as a color, a number or how much text shows, define your own values with [`m:define()`](#mdefinevalues-write-opts).
 
 ## `m:to(targets, opts)`
 
@@ -54,7 +54,7 @@ m:to({ width = 300 }, { duration = 0.25, ease = "outCubic" })
 
 **Callbacks and takeovers.** If a later call takes over one of a call's properties, that earlier call's `onComplete` never runs. `hide()` is the exception, described below. Callbacks run after the frame's update. A callback can safely start new animations.
 
-**Errors.** An error in an `onComplete`, or in a game call Polymorph makes for a frame, goes to the game's error handler, `geterrorhandler()`, once. Other frames keep animating. An `onComplete` error stops nothing. If a game call threw while Polymorph updated a frame, started its native tween or handed it over when combat ended, or if a call that waited for the frame threw (see [Hooks](#hooks)), Polymorph starts that frame over, as if `Poly(frame)` met it for the first time then, and keeps only its rest values. Every animation on the frame stops. Nothing queued for it runs: no `onComplete`, and no `show()` or `hide()` waiting for combat, so neither calls `Show()` or `Hide()`. No later call writes a value staged before the error. The frame then shows the values last set on it: a Lua animation stays where it last drew, a native Translation tween shows its end value, and a protected frame in combat goes back to the anchors and scale it had before combat. `x` and `y` read 0 there. Whether stopping a native Alpha tween restores the frame's own alpha, and therefore shows its end value after a halt, is not yet verified in the client.
+**Errors.** An error in an `onComplete` goes to the game's error handler, `geterrorhandler()`, once, and stops nothing. An error while Polymorph works on a frame, from a game call, an `ease`, a `define()` writer or a hook, first starts that frame over, as if `Poly(frame)` met it for the first time then. The frame keeps only its rest values and the values `define()` made, where they stopped. If a call such as `to()`, `set()` or `get()` was running, the error then goes to that call's caller. Otherwise it goes to the error handler once: during an update, a native tween's start or end, the hand-over when combat ends, or a call that waited for the frame (see [Hooks](#hooks)). Other frames keep animating. Every animation on the frame stops, even if a hook on `Stop()` of one of Polymorph's animation groups throws. Polymorph reports the first such error too. Nothing queued for it runs: no `onComplete`, and no `show()` or `hide()` waiting for combat, so neither calls `Show()` or `Hide()`. No later call writes a value staged before the error. The frame then shows the values last set on it: a Lua animation stays where it last drew, a native Translation tween shows its end value, and a protected frame in combat goes back to the anchors and scale it had before combat. `x` and `y` read 0 there. Whether stopping a native Alpha tween restores the frame's own alpha, and therefore shows its end value after a halt, is not yet verified in the client.
 
 ## `m:set(values)`
 
@@ -234,7 +234,7 @@ Each is a function from progress to eased progress. Add your own to the table.
 
 Springs integrate in fixed steps of 1/120 s. Frame time is clamped to 0.1 s, so a long hitch doesn't make the spring jump.
 
-Unknown easing, spring and preset names raise an error.
+Unknown easing, spring and preset names raise an error at the line that made the call.
 
 ## Textures and font strings
 
@@ -294,7 +294,8 @@ Code that hooks a frame's setters, such as `hooksecurefunc(frame, "SetPoint", fn
 - The work is a call to `to`, `set`, `stop`, `show`, `hide` or `restAt`, an update that moves the frame, a native tween's start or end, the hand-over when combat ends, or a restart after an error. A call from an `ease` function waits the same way.
 - Waiting calls run in the order they were made, and a call made while one of them runs waits behind them.
 - Work that already reached its targets still completes. If a hook calls `set()` during a slide's last update, the slide's `onComplete` still runs, after the `set()`.
-- `get()` and `isMoving()` answer at once. During the work, they return the work's own values.
+- `get()` and `isMoving()` answer at once. During the work, they return the work's own values. `define()` also takes effect at once.
+- A waiting call checks its arguments at once, so an unknown name raises at the hook's line.
 - Calls on other frames run at once.
 - A waiting call that throws starts the frame over (see [Errors](#mtotargets-opts)), and the calls waiting behind it are dropped. If more than 100 calls wait for one frame in a row, for example from a hook that calls Polymorph on every write, Polymorph reports an error and starts the frame over.
 

@@ -133,15 +133,18 @@ Poly.springs = {
   molasses = { stiffness = 280, damping = 120 },
 }
 
-local function resolveEase(ease)
-  if type(ease) == "function" then return ease end
-  if type(ease) == "table" then return bezier(ease[1], ease[2], ease[3], ease[4]) end
-  return Poly.easings[ease or "outCubic"] or error("Polymorph: unknown ease " .. tostring(ease), 0)
-end
-
-local function resolveSpring(spring)
+-- A call's curve: an ease function when opts has a duration, otherwise a
+-- spring table. Called from a public method, so error level 3 is the line
+-- that called it.
+local function curveOf(opts)
+  local duration, ease, spring = opts and opts.duration, opts and opts.ease, opts and opts.spring
+  if duration then
+    if type(ease) == "function" then return ease end
+    if type(ease) == "table" then return bezier(ease[1], ease[2], ease[3], ease[4]) end
+    return Poly.easings[ease or "outCubic"] or error("Polymorph: unknown ease " .. tostring(ease), 3)
+  end
   if type(spring) == "table" then return spring end
-  return Poly.springs[spring or "default"] or error("Polymorph: unknown spring " .. tostring(spring), 0)
+  return Poly.springs[spring or "default"] or error("Polymorph: unknown spring " .. tostring(spring), 3)
 end
 
 ---------------------------------------------------------------------------
@@ -322,6 +325,16 @@ local function propOf(m, name)
   return PROPS[name] or m.props and m.props[name]
 end
 
+-- Argument errors point at the line that made the call: each public call
+-- checks its arguments before any work on the frame starts, even work that
+-- would wait. Called from a public method, so error level 3 is that line.
+-- The work then trusts its arguments.
+local function checkNames(m, values)
+  for name in pairs(values) do
+    if not propOf(m, name) then error("Polymorph: unknown property " .. tostring(name), 3) end
+  end
+end
+
 local LAYOUT_FIELD = { x = "offsetX", y = "offsetY" }
 
 -- Restricted properties without a native path wait for combat to end.
@@ -402,15 +415,19 @@ local queueNative -- defined with the other native tween code below
 local resetMotion -- defined with the motion code below
 local halt -- defined below
 local takeVisibility -- defined with show and hide below
--- Work the game blocks on protected frames in combat, run once combat ends.
-local afterCombat = {} -- motion -> function
+-- Work the game blocks on protected frames in combat, run as work on the
+-- frame once combat ends.
+local afterCombat = {} -- motion -> function(m)
 
 -- Errors. Game calls can throw: SetPoint does when an anchor would close a
--- loop. So can a callback. Each callback, timer start and combat-end commit
--- runs under try(), and the driver steps its frames under xpcall. An error
--- then reaches the game's error handler once, and every other frame keeps
--- moving. Lua 5.1's xpcall passes no arguments, so try() hands them over in
--- upvalues.
+-- loop. So can an ease, a define() writer or a hook. Any error in work on a
+-- frame starts that frame over (halt) before the error goes anywhere, so the
+-- error doesn't repeat and whoever hears of it can start fresh work on it. A
+-- public call then raises the error to its caller. Everything else is the
+-- game calling in: the driver, the start timer, a native OnFinished, the
+-- combat-end event, a call that waited. Each reports the error to the game's
+-- error handler once, and every other frame keeps moving. Lua 5.1's xpcall
+-- passes no arguments, so they go over in upvalues.
 local tryFn, tryA, tryB, tryC, tryD
 local function callTry()
   local fn, a, b, c, d = tryFn, tryA, tryB, tryC, tryD
@@ -419,18 +436,25 @@ local function callTry()
 end
 local function caught(err) return err end
 local function report(err) geterrorhandler()(err) end
--- Runs fn(a, b, c, d). If it throws, frame m starts over before the error is
--- reported, so the error handler can start fresh work on it.
-local function try(m, fn, a, b, c, d)
-  tryFn, tryA, tryB, tryC, tryD = fn, a, b, c, d
+
+-- Runs fn(m, a, b, c). If it throws, m starts over and the error is returned.
+local function guarded(m, fn, a, b, c)
+  tryFn, tryA, tryB, tryC, tryD = fn, m, a, b, c
   local ok, err = xpcall(callTry, caught)
   if ok then return end
-  if m then halt(m) end
-  report(err)
+  halt(m)
+  return err
+end
+
+-- Runs a callback, which owns no frame: an error is only reported.
+local function try(fn, a, b, c)
+  tryFn, tryA, tryB, tryC = fn, a, b, c
+  local ok, err = xpcall(callTry, caught)
+  if not ok then report(err) end
 end
 
 -- Reentrant calls. Polymorph works on a frame during a public call, the
--- frame's update, its native start or finish, its combat-end commit and its
+-- frame's update, its native start or finish, its combat-end work and its
 -- halt. A hook on a game call it makes there, or an ease, can call Polymorph
 -- on the same frame. That call waits while the frame is m.busy or `driving`,
 -- and runs once the work is done, in the order the calls came. So the work
@@ -447,50 +471,70 @@ local function runWaiting(m)
       return report("Polymorph: hooks on this frame keep calling Polymorph")
     end
     local c = q[i]
-    try(m, c[1], m, c[2], c[3])
+    local err = guarded(m, c[1], c[2], c[3], c[4])
+    if err then return report(err) end
     i = i + 1
   end
   if m.waiting == q then m.busy, m.waiting = nil, nil end
 end
 
--- Runs fn(m, a, b) as work on m, or queues it while m is busy. An error clears
--- the queue and goes on to the caller.
-local function work(m, fn, a, b)
+-- Runs fn(m, a, b, c) as work on m, or queues it while m is busy. Returns the
+-- error if the work threw.
+local function attempt(m, fn, a, b, c)
   if m.busy or m == driving then
     local q = m.waiting
     if not q then q = {}; m.waiting = q end
-    q[#q + 1] = { fn, a, b }
+    q[#q + 1] = { fn, a, b, c }
     queuedAny = true
-    return m
+    return
   end
   m.busy = true
-  tryFn, tryA, tryB, tryC = fn, m, a, b
-  local ok, err = xpcall(callTry, caught)
-  if not ok then
-    m.busy, m.waiting = nil, nil
-    error(err, 0)
-  end
+  local err = guarded(m, fn, a, b, c)
+  if err then return err end
   if m.waiting then runWaiting(m) else m.busy = nil end
+end
+
+-- Work for a public call: an error goes on to the caller.
+local function work(m, fn, a, b, c)
+  local err = attempt(m, fn, a, b, c)
+  if err then error(err, 0) end
   return m
 end
 
-local function stopGroups(m)
-  for _, ch in pairs(channels[m] or {}) do ch.ag:Stop() end
-  if puppets[m] then puppets[m].ag:Stop() end
+-- Work the game calls in for: a timer, an event, an animation's OnFinished.
+local function enter(m, fn, a, b, c)
+  local err = attempt(m, fn, a, b, c)
+  if err then report(err) end
 end
 
--- A frame whose game call threw starts over, so the error doesn't repeat and
+-- Stops every group of the frame. A Stop() that throws, from a hook on it,
+-- doesn't leave the others drawing: each runs, then the first error is reported.
+local function stopGroups(m)
+  local err
+  for _, ch in pairs(channels[m] or {}) do
+    local ok, e = pcall(ch.ag.Stop, ch.ag)
+    if not ok then err = err or e end
+  end
+  local p = puppets[m]
+  if p then
+    local ok, e = pcall(p.ag.Stop, p.ag)
+    if not ok then err = err or e end
+  end
+  if err then report(err) end
+end
+
+-- A frame whose work threw starts over, so the error doesn't repeat and
 -- nothing from before it moves, shows or hides the frame later. Its animations
--- stop, its queued work goes, and resetMotion rebuilds its motion as
--- Poly(frame) would build it now. A queued native start needs no clearing: it
--- runs only while its track is the motion's.
+-- stop, its queued work goes, and resetMotion rebuilds its motion state from
+-- the frame as it is now. A queued native start needs no clearing: it runs
+-- only while its track is the motion's.
 function halt(m)
   active[m], puppeted[m], afterCombat[m] = nil, nil, nil
   local frame = m.frame
   for i = 1, callbackCount do
     if callbacks[i][2] == frame then callbacks[i][1] = nil end
   end
-  resetMotion(m, frame, m.rest)
+  resetMotion(m)
   work(m, stopGroups)
 end
 
@@ -612,7 +656,7 @@ local function update()
     local c = callbacks[i]
     local fn, frame, name, takenOver = c[1], c[2], c[3], c[4]
     c[1], c[2], c[3], c[4] = nil, nil, nil, nil
-    if fn then try(nil, fn, frame, name, takenOver) end
+    if fn then try(fn, frame, name, takenOver) end
     i = i + 1
   end
   callbackCount = 0
@@ -673,7 +717,7 @@ local function nativeChannel(m, name)
   nativeGroups = nativeGroups + 1
   local ag = m.frame:CreateAnimationGroup()
   ch = { ag = ag, anim = ag:CreateAnimation(PROPS[name].tween) }
-  ag:SetScript("OnFinished", function() work(m, nativeFinished, name, ch) end)
+  ag:SetScript("OnFinished", function() enter(m, nativeFinished, name, ch) end)
   own[name] = ch
   return ch
 end
@@ -736,7 +780,7 @@ local function startQueued()
     list[i], list[i + 1], list[i + 2] = nil, nil, nil
     if t.queued and m.tracks[name] == t then
       t.queued = nil
-      if startsNative(m, name, t, locked(m)) then try(m, work, m, startNative, name, t) else wake(m) end
+      if startsNative(m, name, t, locked(m)) then enter(m, startNative, name, t) else wake(m) end
     end
   end
   spare = list
@@ -816,14 +860,20 @@ local function readAnchors(frame)
   return anchors
 end
 
--- Every field of a motion, read from the frame as it is now: no tracks, its
--- anchors as they are, x and y 0 there. Poly(frame) builds a motion with it,
--- and halt rebuilds one, so a halted motion keeps only its frame and its rest
--- values. The same table stays, so handles the caller holds stay valid.
-function resetMotion(m, frame, rest)
-  local anchors = readAnchors(frame)
-  for k in pairs(m) do m[k] = nil end
-  m.frame, m.rest, m.tracks, m.anchors = frame, rest, {}, anchors
+-- What a handle keeps for its life: its frame, its rest values, and the
+-- values define() made with their writers. Everything else is motion state.
+local HANDLE = { frame = true, rest = true, props = true, values = true }
+
+-- Every field of a motion's state, read from the frame as it is now: no
+-- tracks, its anchors as they are, x and y 0 there. Poly(frame) builds a
+-- motion with it, and halt rebuilds one, so a halted motion keeps only what
+-- HANDLE names. The same table stays, so handles the caller holds stay valid.
+function resetMotion(m)
+  local anchors = readAnchors(m.frame)
+  for k in pairs(m) do
+    if not HANDLE[k] then m[k] = nil end
+  end
+  m.tracks, m.anchors = {}, anchors
   m.offsetX, m.offsetY, m.visibilityToken = 0, 0, 0
   return m
 end
@@ -835,7 +885,7 @@ local function motionFor(frame)
   -- What show() returns to. A frame first touched at alpha 0 rests at 1.
   local rest = { alpha = alpha > 0 and alpha or 1, scale = frame:GetScale(), width = frame:GetWidth(),
                  height = frame:GetHeight(), x = 0, y = 0 }
-  m = resetMotion(setmetatable({}, Motion), frame, rest)
+  m = resetMotion(setmetatable({ frame = frame, rest = rest }, Motion))
   motions[frame] = m
   return m
 end
@@ -916,11 +966,12 @@ local function touchesLayout(values)
 end
 
 -- owner: nil for to(), "show" or "hide".
-local function animate(m, targets, opts, owner)
+-- curve: curveOf(opts), resolved when the call was made.
+local function animate(m, targets, opts, curve, owner)
   opts = opts or {}
   if touchesLayout(targets) then syncAnchors(m) end
-  local spring = not opts.duration and resolveSpring(opts.spring) or nil
-  local ease = opts.duration and resolveEase(opts.ease) or nil
+  local spring, ease
+  if opts.duration then ease = curve else spring = curve end
   local pending, lost = 0, false
   -- A hide() finishes once every property it still owns has arrived. Any other
   -- call skips its onComplete once one of its properties is taken over.
@@ -930,7 +981,7 @@ local function animate(m, targets, opts, owner)
     if pending == 0 and not lost and opts.onComplete then opts.onComplete(m.frame) end
   end
   for name, target in pairs(targets) do
-    local prop = propOf(m, name) or error("Polymorph: unknown property " .. tostring(name), 0)
+    local prop = propOf(m, name)
     local t = m.tracks[name]
     if t then
       takeOver(m, name)
@@ -968,21 +1019,22 @@ end
 --       duration (seconds) and ease = name, { x1, y1, x2, y2 } or function
 --       delay (seconds), onComplete(frame) when every property in this call has arrived
 function Motion:to(targets, opts)
-  return work(self, animate, targets, opts)
+  checkNames(self, targets)
+  return work(self, animate, targets, opts, curveOf(opts))
 end
 
 local function set(m, values)
   if touchesLayout(values) then syncAnchors(m) end
   m.isLocked = locked(m)
   for name, value in pairs(values) do
-    local prop = propOf(m, name) or error("Polymorph: unknown property " .. tostring(name), 0)
+    local prop = propOf(m, name)
     takeOver(m, name)
     local t = m.tracks[name]
     if t and t.native then t.native.ag:Stop() end
     m.tracks[name] = nil
     release(m, name)
     if m.isLocked and waitsWhileLocked(prop) then
-      animate(m, { [name] = value }, { duration = 0 }) -- applied when combat ends
+      animate(m, { [name] = value }, { duration = 0 }, linear) -- applied when combat ends
     else
       prop.write(m, value)
     end
@@ -991,6 +1043,7 @@ end
 
 -- Jumps to values immediately and stops those properties.
 function Motion:set(values)
+  checkNames(self, values)
   return work(self, set, values)
 end
 
@@ -1035,6 +1088,8 @@ end
 -- values) once. Defining a name again replaces its writer and keeps its value,
 -- and every writer reads the values from the one table, so none goes stale.
 -- opts.precision: how close a value must come to its target to arrive.
+-- define() changes what names mean on the handle, not the frame, so it runs
+-- at once, even during work: a call made right after it can use its names.
 function Motion:define(values, write, opts)
   local precision = opts and opts.precision or 0.001
   local current, frame = self.values or {}, self.frame
@@ -1080,7 +1135,7 @@ Poly.presets = {
 
 local function resolveAway(away)
   if type(away) == "table" then return away end
-  return Poly.presets[away or "fade"] or error("Polymorph: unknown preset " .. tostring(away), 0)
+  return Poly.presets[away or "fade"] or error("Polymorph: unknown preset " .. tostring(away), 3)
 end
 
 local combatWatch = Poly._combatWatch or CreateFrame("Frame")
@@ -1090,11 +1145,11 @@ combatWatch:SetScript("OnEvent", function()
   for m in pairs(puppeted) do
     m.isLocked = false
     -- commit checks the anchors: a secure header may have moved the frame in combat.
-    try(m, work, m, commit)
+    enter(m, commit)
   end
   for m, fn in pairs(afterCombat) do
     afterCombat[m] = nil
-    try(nil, fn)
+    enter(m, fn)
   end
 end)
 
@@ -1126,49 +1181,47 @@ local function restingTargets(m, away)
   return targets
 end
 
-local function show(m, away, opts)
-  away = resolveAway(away)
+local function show(m, away, opts, curve)
   takeVisibility(m)
   local frame = m.frame
   if not frame:IsShown() then
     if locked(m) then
-      afterCombat[m] = function() work(m, show, away, opts) end
+      afterCombat[m] = function() show(m, away, opts, curve) end
       return
     end
     set(m, away)
     frame:Show()
   end
-  animate(m, restingTargets(m, away), opts, "show")
+  animate(m, restingTargets(m, away), opts, curve, "show")
 end
 
 -- Shows the frame from `away` (preset name or values) and animates to rest.
 -- While a hide is running, show() cancels it and turns the frame around,
 -- returning every property that hide was moving.
 function Motion:show(away, opts)
-  return work(self, show, away, opts)
+  away = resolveAway(away)
+  checkNames(self, away)
+  return work(self, show, away, opts, curveOf(opts))
 end
 
-local function hide(m, away, opts)
-  away = resolveAway(away)
+local function hide(m, away, opts, curve)
   opts = opts or {}
   local token = takeVisibility(m)
   local userDone = opts.onComplete
-  local finish
   local function hideNow()
     if m.visibilityToken ~= token then return end
     if locked(m) then
-      afterCombat[m] = finish
+      afterCombat[m] = hideNow
       return
     end
     m.frame:Hide()
     -- Only what show()/hide() still own. set() releases each one it resets.
     set(m, restingTargets(m, {}))
-    if userDone then userDone(m.frame) end
+    if userDone then try(userDone, m.frame) end
   end
-  function finish() work(m, hideNow) end
   local copy = {}
   for k, v in pairs(opts) do copy[k] = v end
-  copy.onComplete = finish
+  copy.onComplete = function() enter(m, hideNow) end
   -- Locked: animate only what the game allows (alpha, and x/y/scale via the puppet).
   -- The rest would wait for combat to end, and a fading frame does not need it.
   local targets = away
@@ -1179,14 +1232,16 @@ local function hide(m, away, opts)
     end
     if next(targets) == nil then return hideNow() end
   end
-  animate(m, targets, copy, "hide")
+  animate(m, targets, copy, curve, "hide")
 end
 
 -- Animates to `away`, then hides the frame and resets it to rest while hidden.
 -- On a protected frame in combat the fade still plays, and Hide() waits for
 -- combat to end. The frame takes clicks until then.
 function Motion:hide(away, opts)
-  return work(self, hide, away, opts)
+  away = resolveAway(away)
+  checkNames(self, away)
+  return work(self, hide, away, opts, curveOf(opts))
 end
 
 setmetatable(Poly, { __call = function(_, frame) return motionFor(frame) end })
