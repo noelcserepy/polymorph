@@ -66,6 +66,20 @@ To copy it in by hand, `Polymorph.lua` and `lib.xml` are all you need, plus LibS
 
 Animate several properties in one call. Each one moves on its own track.
 
+`Poly()` takes frames, textures and font strings. Combat rules follow each one's own `IsProtected()`. On a `SecureActionButtonTemplate` button, its texture and font string report `IsProtected()` false before and during combat. Layout and visibility calls on its texture in combat raised 0 blocked actions. Font-string layout and visibility calls in combat have not been measured yet.
+
+### Your own values
+
+For anything else, such as a color, a number that counts up, or text that types itself out, define your own values on a handle and animate them like any property. Polymorph calls your writer once per update with every current value:
+
+```lua
+local r, g, b = icon:GetVertexColor()
+Poly(icon):define({ r = r, g = g, b = b }, function(tex, c) tex:SetVertexColor(c.r, c.g, c.b) end)
+Poly(icon):to({ r = 1, g = 0.2, b = 0.2 }, { duration = 0.3 })
+```
+
+Names you define belong to that one handle, so addons sharing Polymorph can't collide. [`docs/api.md`](docs/api.md#mdefinevalues-write-opts) has the rules and three examples you can copy: a number counter that rolls to each new total, a typewriter, and a color fade.
+
 ## Springs and tweens
 
 Without a `duration`, `:to()` uses a spring. Presets use react-spring's names and values: `default`, `gentle`, `wobbly`, `stiff`, `slow`, `molasses`. You can also pass your own `{ stiffness, damping, mass }`.

@@ -82,6 +82,13 @@ local cases = {
   { "native eases: outSine rows, linear secure fade", true, { 'duration = 0.3, delay = (i - 1) * 0.05', 'duration = 0.3, ease = "outSine", delay = (i - 1) * 0.05', 'Poly(panel):hide("fade", { duration = 0.2 })', 'Poly(panel):hide("fade", { duration = 0.2, ease = "linear" })' } },
   { "native eases: toggle and toast", true, { 'Poly(panel):hide("pop", { duration = 0.15, ease = "inQuad" })', 'Poly(panel):hide("fade", { duration = 0.15, ease = "inSine" })', 'Poly(toast):hide("above")', 'Poly(toast):hide("above", { duration = 0.3, ease = "inOutSine" })' } },
   { "first row starts half visible", "row 1 did not start invisible", { 'Poly(row):set({ alpha = 0 })', 'Poly(row):set({ alpha = i == 1 and 0.5 or 0 })' } },
+  { "counter jumps to each total", "did not roll to 1000", { 'm:to({ total = total })', 'm:set({ total = total })' } },
+  { "counter formats with %d", "integer overflow", { '("%.0f"):format(v.total)', '("%d"):format(math.floor(v.total))' } },
+  { "counter restarts from 0 on every call", "rolled back", { 'm:to({ total = total })', 'm:set({ total = 0 }):to({ total = total })' } },
+  { "counter ignores calls mid-roll", "want 3000001500", { 'm:to({ total = total })', 'if not m:isMoving() then m:to({ total = total }) end' } },
+  { "counter shows decimals", "not a whole number", { '("%.0f"):format(v.total)', '("%.2f"):format(v.total)' } },
+  { "counter on an overshooting spring", "rolled back", { 'm:to({ total = total })', 'm:to({ total = total }, { spring = "stiff" })' } },
+  { "counter with a tween and separators", true, { 'm:to({ total = total })', 'm:to({ total = total }, { duration = 0.4 })', '("%.0f"):format(v.total)', 'BreakUpLargeNumbers(v.total)' } },
 }
 
 local function plain(s) return (s:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")) end
@@ -99,7 +106,7 @@ for _, c in ipairs(cases) do
   local pipe = assert(io.popen(("%s tools/skill_check.lua %s %s 2>&1"):format(lua, lib, tmp)))
   local output = pipe:read("*a")
   pipe:close()
-  local passed = output:find("6 of 6 passed", 1, true) ~= nil
+  local passed = output:find("7 of 7 passed", 1, true) ~= nil
   local failures = select(2, output:gsub("\nFAIL ", "")) + (output:sub(1, 5) == "FAIL " and 1 or 0)
   local right
   if shouldPass == true then

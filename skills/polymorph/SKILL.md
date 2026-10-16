@@ -1,6 +1,6 @@
 ---
 name: polymorph
-description: Animate World of Warcraft addon frames with the Polymorph-1.0 library. Use when addon Lua fades, slides, scales, resizes, shows or hides a frame, or when the addon embeds Polymorph.
+description: Animate World of Warcraft addon frames, textures and font strings with the Polymorph-1.0 library. Use when addon Lua fades, slides, scales, resizes, shows or hides one, animates a color, a number or text being typed out, or when the addon embeds Polymorph.
 ---
 
 # Polymorph
@@ -14,7 +14,7 @@ Poly(frame):to({ width = 300 }, { duration = 0.25, ease = "outCubic" })
 Poly(panel):hide("below")                                       -- animate out, then Hide()
 ```
 
-Calling `to()` again at any time retargets from where the frame is now, and a spring keeps its speed. So call it from events as often as the state changes, and never wait for an animation to finish first. One shared `OnUpdate` drives everything, and it switches off when nothing moves.
+`Poly()` takes a frame, a texture or a font string. Calling `to()` again at any time retargets from where the frame is now, and a spring keeps its speed. So call it from events as often as the state changes, and never wait for an animation to finish first. One shared `OnUpdate` drives everything, and it switches off when nothing moves.
 
 The full reference is `docs/api.md` in the Polymorph repository: https://github.com/noelcserepy/polymorph/blob/main/docs/api.md. Read it when a case below doesn't cover what you need.
 
@@ -54,6 +54,7 @@ Each rule prevents a bug that is easy to write and hard to see.
 
    Your own code must not call those functions in combat either. Let Polymorph do it.
 7. **`onComplete` belongs to one call.** It runs once, after every property in that call has arrived. If a later `to()`, `set()` or `stop()` takes over one of its properties, it never runs. `hide()` is the exception: it finishes once the properties it still owns arrive.
+8. **Anything else goes through `define()`.** For a color, a number or typed-out text, define your own values on the handle once, at creation, and then animate them with `to()` like any property. Defining a name again replaces its writer and keeps its current value. Polymorph calls your writer once per update with every value defined on the handle, and `set()` calls it at once. It calls it in combat too, so the writer must never call `SetPoint`, `SetSize`, `SetScale`, `Show` or `Hide`. Use it for calls like `SetText`, `SetVertexColor`, `SetTextColor` and `SetAlphaGradient`. Don't start animations from a writer. Format numbers with `"%.0f"`, because WoW's `"%d"` errors above 2^31. A value finishes within 0.001 of its target. For a number shown whole, pass `{ precision = 0.5 }` as the third argument. Otherwise the counter keeps running for 0.63 s after its digits stop, and `onComplete` waits that long.
 
 ## API
 
@@ -68,8 +69,9 @@ Each rule prevents a bug that is easy to write and hard to see.
 | `m:show(away, opts)` | Shows the frame and animates from `away` to rest. |
 | `m:hide(away, opts)` | Animates to `away`, then calls `Hide()` and resets to rest. |
 | `m:restAt(values)` | Changes the rest values `show()` returns to. |
+| `m:define(values, write, opts)` | Adds your own values to this handle, starting at the numbers in `values`. Polymorph calls `write(frame, current)` once per update while any of them moves. `current` holds every value defined on the handle. `opts.precision` is how close a value must come to arrive, 0.001 by default. |
 
-Properties: `alpha`, `x`, `y`, `width`, `height`, `scale`. Unknown names raise an error.
+Properties: `alpha`, `x`, `y`, `width`, `height`, `scale`, plus the names you `define()` on that handle. Unknown names raise an error, and so does defining a built-in name.
 
 `opts` for `to()`, `show()` and `hide()`:
 
@@ -143,6 +145,44 @@ button:SetSize(40, 40)
 button:SetPoint("CENTER", holder, "CENTER", 0, 0)
 button:SetScript("OnEnter", function(b) Poly(b):to({ scale = 1.1 }, { spring = "stiff" }) end)
 button:SetScript("OnLeave", function(b) Poly(b):to({ scale = 1 }, { spring = "stiff" }) end)
+```
+
+**Number that rolls to each new total.** Define it once, then retarget on every event. The spring keeps its speed, so a burst of hits never stalls the number. Use the default spring or a tween: `wobbly`, `stiff` and `gentle` overshoot, so the number would pass the total and roll back.
+
+```lua
+local function NumberCounter(fs)
+  local m = Poly(fs):define({ total = 0 }, function(text, v)
+    text:SetText(("%.0f"):format(v.total)) -- never "%d": it errors above 2^31
+  end, { precision = 0.5 }) -- arrives when the shown digits stop changing
+  m:set({ total = 0 })
+  local total = 0
+  return function(amount)
+    total = total + amount
+    m:to({ total = total })
+  end
+end
+```
+
+**Color fade.** One value per channel and one writer, so a retarget mid-fade turns smoothly toward the new color. For a font string, use `GetTextColor` and `SetTextColor`.
+
+```lua
+local r, g, b = icon:GetVertexColor()
+Poly(icon):define({ r = r, g = g, b = b }, function(tex, c) tex:SetVertexColor(c.r, c.g, c.b) end)
+Poly(icon):to({ r = 1, g = 0.2, b = 0.2 }, { duration = 0.3, ease = "outSine" })
+```
+
+**Typewriter.** `SetAlphaGradient(start, length)` shows the first `start` characters and fades out the next `length`. The text is laid out once, so words never jump to the next line as they appear. `SetText` clears the gradient until the code that called it returns, so set the text from a timer. Polymorph then draws the gradient later in the same frame. Called straight from an `onComplete` or an `OnUpdate`, the whole text shows for a frame.
+
+```lua
+local m = Poly(fs):define({ shown = 0 }, function(text, v) text:SetAlphaGradient(v.shown, 4) end)
+m:set({ shown = 0 }) -- hides the current text now
+C_Timer.After(0, function()
+  fs:SetText(text)
+  local plain = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+  local length = select(2, plain:gsub("[^\128-\191]", "")) -- characters, not bytes or color codes
+  m:set({ shown = 0 }):to({ shown = length }, { duration = length / 40, ease = "linear",
+    onComplete = function() fs:ClearAlphaGradient() end })
+end)
 ```
 
 **Steps in order.** Start the next step from `onComplete`.

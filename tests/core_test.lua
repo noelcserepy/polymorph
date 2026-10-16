@@ -16,6 +16,7 @@
 -- Animations advance after scripts, so a group drawn in the frame it was played already counts it: anim_clock.lua, draw_lag.lua, 2026-10-15
 -- Timer callbacks run before the frame's OnUpdate scripts: start_timing.lua, 2026-10-15 (60 of 60)
 -- Event code runs before the frame's OnUpdate: unmeasured
+-- A timer callback and an OnUpdate script in the same frame are separate callbacks: regions_gradient2.lua, 2026-10-15
 -- C_Timer.After(0, fn) runs fn in the next frame: start_timing.lua, 2026-10-15 (60 of 60)
 -- OnFinished fires in the animation step of the frame whose elapsed reaches the duration, before drawing: unmeasured
 --
@@ -26,13 +27,27 @@
 -- SetAlpha, CreateAnimationGroup and native Alpha, Translation and Scale groups work on a locked frame: probe session 1, 2026-10-14
 -- Writers work again when PLAYER_REGEN_ENABLED fires: combat.lua, 2026-10-14 (the library commits in that handler, 0 blocked actions)
 -- InCombatLockdown() is false inside PLAYER_REGEN_ENABLED handlers: unmeasured
+-- A texture or font string of a SecureActionButtonTemplate button reports IsProtected() false, before and in
+--   combat, while the button reports true: regions.lua, regions_combat.lua, 2026-10-15
+-- SetPoint, SetSize, SetWidth, SetHeight, SetScale, Show and Hide, each called once in combat on a texture of
+--   such a button, raised 0 blocked actions: regions_combat.lua, 2026-10-15. Show, SetScale, SetWidth,
+--   SetHeight and Hide read back applied. SetPoint and SetSize failed an exact comparison, which the same
+--   calls fail out of combat too (30.000002 and 59.999905): regions_measure.lua, 2026-10-15
+-- The same calls on a font string of a protected frame in combat: unmeasured. fakeRegion treats a region like a
+--   frame, locked by its own IsProtected().
+-- SetText, SetVertexColor and SetAlphaGradient on regions of protected frames in combat raised 0 blocked actions,
+--   and the text and color read back changed: regions_combat.lua, 2026-10-15. SetTextColor in combat: unmeasured
 -- Deliberate difference: a blocked call errors here. The game returns normally, skips it, fires ADDON_ACTION_BLOCKED and shows a popup: probe session 1, 2026-10-14
 --
 -- Getters:
 -- GetPoint() ignores animation displacement: native_probe.lua, native_puppet.lua, combat.lua, 2026-10-14
--- GetAlpha(), GetScale() and GetWidth() report the frame's own values under native animations: native_curves.lua, 2026-10-14
+-- GetAlpha(), GetScale() and GetWidth() read from OnUpdate report the frame's own values under native animations:
+--   native_curves.lua, 2026-10-14. Read from a C_Timer callback, GetAlpha() reports the drawn alpha, on frames,
+--   textures and font strings: regions_measure.lua, regions_gradient.lua, 2026-10-15. The fake always reports
+--   the own value. The library reads GetAlpha() only for a property with no track.
 -- GetHeight() does the same: unmeasured
--- Getters return exactly the value last set, with no float rounding: unmeasured
+-- Getters return exactly the value last set, with no float rounding. Measured otherwise: SetAlpha(0.5) reads
+--   0.50196 (1/255 steps), and a texture's SetPoint(..., 100) reads 99.99999: regions.lua, 2026-10-15
 -- IsShown() reports the frame's own shown flag: unmeasured
 --
 -- Native animations:
@@ -66,6 +81,19 @@
 -- Scale groups on one frame multiply, and the last playing Scale's origin wins: unmeasured
 -- Of two playing Alpha animations on one frame, the last one created draws: unmeasured
 -- A new animation lasts 1 s with NONE smoothing: unmeasured (the library sets both)
+-- Textures and font strings have every method the library calls: regions.lua, 2026-10-15
+-- Polymorph's native Alpha and Translation tweens start and play on textures and font strings, and draw at the
+--   same x and brightness as a Lua tween on the same curve: regions_measure.lua, 2026-10-15
+-- Scale animations on textures and font strings: unmeasured
+--
+-- Region methods:
+-- FontString:SetAlphaGradient(start, length) shows `start` characters and fades the next `length` out. It counts
+--   on across wrapped lines, a UTF-8 character counts once, and |c color codes don't count:
+--   regions_measure.lua, regions_gradient.lua, 2026-10-15. ClearAlphaGradient() shows it all: regions.lua, 2026-10-15
+-- SetText, even of the same string, clears the drawn gradient, and a gradient set later in the same callback
+--   doesn't draw. One set in a later callback, such as an OnUpdate after a timer in the same frame, does:
+--   regions_gradient.lua, regions_gradient2.lua, 2026-10-15. The fake models callbacks as test code, each
+--   timer, and the driver's OnUpdate.
 --
 -- Strings:
 -- string.format errors on %d and %i outside the 32-bit range: unmeasured
@@ -99,6 +127,8 @@ local function fire(e)
   for _, f in ipairs(eventHandlers[e] or {}) do f.onEvent(f, e) end
 end
 local frameNumber, timers = 0, {}
+-- Which callback the game is in. SetText clears the gradient for the rest of it.
+local callback = 0
 _G.C_Timer = {
   After = function(seconds, fn)
     timers[#timers + 1] = { due = clock + seconds, frame = frameNumber, fn = fn }
@@ -114,7 +144,10 @@ local function runTimers()
       table.insert(due, 1, t)
     end
   end
-  for _, t in ipairs(due) do t.fn() end
+  for _, t in ipairs(due) do
+    callback = callback + 1
+    t.fn()
+  end
 end
 -- The recorded misdraw: a Translation group played from OnUpdate draws its first
 -- frame against the anchor the frame had before that frame's scripts ran.
@@ -175,6 +208,8 @@ local function fakeFrame(protected)
     self.pointCalls = self.pointCalls + 1
   end
   function f:IsProtected() return protected end
+  function f:IsObjectType(kind) return kind == "Frame" end
+  function f:GetParent() return nil end
   -- Native animation groups. Progress runs over the duration, backwards when
   -- played in reverse, through the smoothing curve. A Translation offset is in
   -- the frame's scaled units and ignores any Scale. A Scale grows the frame
@@ -276,22 +311,29 @@ local function fakeFrame(protected)
 end
 unpack = unpack or table.unpack
 
--- WoW's string.format stores %d and %i in a 32-bit int and errors outside that
--- range (unmeasured in-game). Reference Lua uses 64 bits, so fake the game's limit.
-local realFormat = string.format
-string.format = function(fmt, ...)
-  local i = 0
-  for spec in fmt:gmatch("%%[-+ #0-9.]*([%a%%])") do
-    if spec ~= "%" then
-      i = i + 1
-      local v = select(i, ...)
-      if (spec == "d" or spec == "i") and type(v) == "number" and (v >= 2 ^ 31 or v < -2 ^ 31) then
-        error("integer overflow attempting to store " .. realFormat("%.0f", v), 2)
-      end
-    end
+-- A texture or font string of `parent`. Like a frame, it is locked by its own
+-- IsProtected(), which is false on a protected button as measured. `gradient`
+-- is what draws: SetText clears it, and a gradient set later in the same
+-- callback doesn't draw.
+local function fakeRegion(parent, protected)
+  local r = fakeFrame(protected)
+  function r:IsObjectType(kind) return kind == "Region" end
+  function r:GetParent() return parent end
+  function r:SetText(text)
+    self.text, self.gradient, self.textCallback = text, nil, callback
   end
-  return realFormat(fmt, ...)
+  function r:GetText() return self.text end
+  function r:SetAlphaGradient(start, length)
+    if self.textCallback ~= callback then self.gradient = { start, length } end
+  end
+  function r:ClearAlphaGradient() self.gradient = nil end
+  r.color = { 1, 1, 1 }
+  function r:SetVertexColor(red, green, blue) self.color = { red, green, blue } end
+  function r:GetVertexColor() return unpack(self.color) end
+  return r
 end
+
+dofile("tests/format_fake.lua")
 assert(not pcall(string.format, "%d", 2 ^ 31) and pcall(string.format, "%d", 2 ^ 31 - 1), "%d fake")
 
 local ns = { dev = true }
@@ -308,6 +350,7 @@ local function run(seconds, fps)
     clearMisdraws()
     runTimers()
     if driverScript then
+      callback = callback + 1
       inOnUpdate = true
       driverScript(nil, tick)
       inOnUpdate = false
@@ -315,6 +358,7 @@ local function run(seconds, fps)
     advanceAnimations(tick)
     clock, tick = clock + dt, dt
     frameNumber = frameNumber + 1
+    callback = callback + 1 -- test code after this runs as the next frame's event
   end
 end
 
@@ -1034,6 +1078,155 @@ test("random show/hide sequences end where the last calls say", function()
       end
     end
   end
+end)
+
+test("a texture of a protected frame in combat is not locked: its own IsProtected() decides", function()
+  local tex = fakeRegion(fakeFrame(true))
+  combat = true
+  Poly(tex):to({ alpha = 0.5, x = 30, width = 160 }, { duration = 0.2 })
+  run(0.5)
+  assert(tex.alpha == 0.5 and tex.point[4] == 40 and tex.w == 160, "waited for combat to end")
+  Poly(tex):hide("fade", { duration = 0.2 })
+  run(0.5)
+  combat = false
+  assert(not tex.shown, "Hide waited for combat to end")
+end)
+
+-- The examples in docs/api.md, run as written: the block that defines `name`.
+-- Run from the repository root.
+local docs = assert(io.open("docs/api.md")):read("*a")
+_G.LibStub = function(name) assert(name == "Polymorph-1.0"); return Poly end
+local compile = loadstring or load
+local function example(name)
+  for code in docs:gmatch("```lua\n(.-)```") do
+    if code:find("local function " .. name .. "(", 1, true) then
+      return assert(compile(code .. "\nreturn " .. name, name))()
+    end
+  end
+  error("no example " .. name .. " in docs/api.md")
+end
+
+test("define: names belong to the handle, built-in names error, a redefine keeps the value", function()
+  local a, b = Poly(fakeFrame()), Poly(fakeFrame())
+  local seen = {}
+  a:define({ n = 0 }, function(_, v) seen.a = v.n end)
+  b:define({ n = 5 }, function(_, v) seen.b = v.n end)
+  a:set({ n = 3 })
+  assert(seen.a == 3 and seen.b == nil and b:get("n") == 5, "handles share a value")
+  assert(not pcall(a.define, a, { alpha = 1 }, print), "redefined a built-in")
+  local c = Poly(fakeFrame())
+  assert(not pcall(c.to, c, { n = 1 }), "a name defined elsewhere animated here")
+  a:to({ n = 10 }, { duration = 1, ease = "linear" })
+  run(0.5)
+  local mid = a:get("n")
+  a:define({ n = 0 }, function(_, v) seen.again = v.n end)
+  assert(a:get("n") == mid and a:isMoving("n"), "redefine reset the value")
+  run(1)
+  assert(seen.again == 10 and a:get("n") == 10, "the new writer did not finish it")
+end)
+
+test("define: redefining some of a writer's names leaves its other writer drawing current values", function()
+  local f = fakeFrame()
+  local m = Poly(f)
+  m:define({ r = 1, g = 1 }, function(frame, v) frame.r, frame.g = v.r, v.g end)
+  m:define({ r = 1 }, function(frame, v) frame.r = v.r end)
+  m:set({ r = 0.2 })
+  m:set({ g = 0.5 })
+  assert(f.r == 0.2 and m:get("r") == 0.2, "the first writer drew a stale r: " .. f.r)
+  m:to({ g = 0 }, { duration = 0.1 })
+  run(0.2)
+  assert(f.r == 0.2 and f.g == 0, "the driver drew a stale r: " .. f.r)
+end)
+
+test("define: a value with precision 0.5 arrives in the frame its digits settle", function()
+  local m = Poly(fakeFrame())
+  local text
+  m:define({ n = 0 }, function(_, v) text = ("%.0f"):format(v.n) end, { precision = 0.5 })
+  m:to({ n = 1500000 })
+  local frame, changed, last = 0, 0, nil
+  repeat
+    run(1 / 60)
+    frame = frame + 1
+    if text ~= last then changed, last = frame, text end
+  until not m:isMoving() or frame > 600
+  assert(text == "1500000" and frame == changed, "arrived " .. (frame - changed) .. " frames after the digits settled")
+end)
+
+test("example number counter: rolls to each total, retargets mid-roll, prints past 2^31", function()
+  local fs = fakeRegion(fakeFrame())
+  local calls, setText = 0, fs.SetText
+  function fs:SetText(text) calls = calls + 1; setText(self, text) end
+  local add = example("NumberCounter")(fs)
+  assert(fs.text == "0", "not set to 0")
+  add(1000)
+  local last = 0
+  local function rolls(frames)
+    for _ = 1, frames do
+      run(1 / 60)
+      local n = tonumber(fs.text)
+      assert(n >= last, "rolled back from " .. last .. " to " .. n)
+      last = n
+    end
+  end
+  rolls(6)
+  assert(calls == 7 and last > 0 and last < 1000, calls .. " SetText calls, showing " .. last)
+  local m = Poly(fs)
+  local before, velocity = m:get("total")
+  add(2 ^ 31 + 5000)
+  local after, velocityAfter = m:get("total")
+  assert(before == after and velocity == velocityAfter, "jump on retarget")
+  rolls(300)
+  assert(fs.text == "2147489648" and not m:isMoving(), fs.text)
+end)
+
+test("example typewriter: types at its speed and never draws untyped text, called from an event or onComplete", function()
+  local fs = fakeRegion(fakeFrame())
+  local typeText = example("Typewriter")(fs, 40)
+  -- Runs frames until `text` has typed out. Until then, each frame draws a gradient, never the whole text.
+  local function typesOut(text, frames)
+    for _ = 1, frames or 120 do
+      run(1 / 60)
+      if not fs.gradient then
+        assert(fs.text == text and not Poly(fs):isMoving(), "drew all of " .. tostring(fs.text) .. " while typing")
+        return
+      end
+    end
+    if not frames then error(text .. " never finished") end
+  end
+  typeText("Hello, w\195\182rld") -- 12 characters in 13 bytes
+  typesOut(nil, 10)
+  assert(fs.text == "Hello, w\195\182rld" and near(fs.gradient[1], 6, 0.7), "shown " .. fs.gradient[1] .. " after 10 frames at 40 per second")
+  typesOut("Hello, w\195\182rld")
+  -- From an onComplete, which runs inside the driver's update, after the frame's SetText would draw.
+  local started = false
+  Poly(fakeFrame()):to({ width = 0 }, { duration = 0.05, ease = "inQuad", onComplete = function()
+    typeText("Again, |cffff4040red|r")
+    started = true
+  end })
+  repeat run(1 / 60) until started
+  assert(fs.gradient, "drew all of " .. fs.text .. " in the frame typeText was called")
+  typesOut(nil, 2)
+  assert(select(3, Poly(fs):get("shown")) == 10, "color codes counted as characters")
+  typesOut("Again, |cffff4040red|r")
+end)
+
+test("example color fade: one SetVertexColor per update, retargets smoothly, runs in combat", function()
+  local tex = fakeRegion(fakeFrame(true))
+  local calls, setColor = 0, tex.SetVertexColor
+  function tex:SetVertexColor(...) calls = calls + 1; setColor(self, ...) end
+  local tint = example("ColorFade")(tex)
+  combat = true -- the writer is allowed in combat, so the fade runs there
+  tint(1, 0.2, 0.2, { duration = 0.3, ease = "outSine" })
+  run(0.1)
+  local r, g, b = unpack(tex.color)
+  assert(calls == 6, calls .. " SetVertexColor calls in 6 updates")
+  assert(r == 1 and g < 1 and g > 0.2 and b == g, "not between white and red: " .. g)
+  tint(0, 0, 1, { duration = 0.3 })
+  assert(Poly(tex):get("g") == g, "jump on retarget")
+  run(0.5)
+  combat = false
+  r, g, b = unpack(tex.color)
+  assert(r == 0 and g == 0 and b == 1, "did not land on blue")
 end)
 
 print(("CORE OK: %d tests"):format(passed))

@@ -10,6 +10,9 @@
 --      1.15x around its center on enter, and back on leave.
 --   5. M.closeSecurePanel(panel): animates a protected panel out and hides it, in or out of combat.
 --   6. M.fadeListIn(rows): fades in anchored rows from invisible, one slightly after another.
+--   7. M.makeCounter(fontString): returns add(amount). Each call adds to a running total, which the
+--      font string shows as a whole number that rolls smoothly to each new total, also when a call
+--      comes mid-roll. Totals can pass 3 billion.
 local libPath, answerPath = assert(arg[1], "Polymorph.lua"), assert(arg[2], "answer.lua")
 
 local combat, now, tick = false, 0, 1 / 60
@@ -65,9 +68,14 @@ function Region:HookScript(name, fn)
   self.scripts[name] = old and function(...) old(...); fn(...) end or fn
 end
 function Region:RegisterEvent(e) events[e] = events[e] or {}; table.insert(events[e], self) end
-function Region:CreateTexture() return setmetatable({ scripts = {} }, Region) end
-function Region:CreateFontString() return setmetatable({ scripts = {} }, Region) end
+function Region:CreateTexture() return setmetatable({ scripts = {}, parent = self, shown = true, alpha = 1, w = 0, h = 0, s = 1 }, Region) end
+function Region:CreateFontString() return setmetatable({ scripts = {}, parent = self, shown = true, alpha = 1, w = 0, h = 0, s = 1 }, Region) end
 function Region:GetParent() return self.parent end
+-- Frames have a kind from CreateFrame. Textures and font strings don't.
+function Region:IsObjectType(kind) return kind == "Frame" and self.kind ~= nil end
+function Region:SetText(text) self.text = text end
+function Region:GetText() return self.text end
+function Region:SetFormattedText(fmt, ...) self.text = fmt:format(...) end
 -- The combat puppet: Polymorph steers a paused Translation and Scale. Only
 -- their effect on where the frame draws matters here, so they are recorded.
 -- Native animation groups, as measured in the client. Progress runs over the
@@ -189,6 +197,12 @@ C_Timer = {
   After = function(sec, fn) timers[#timers + 1] = { at = now + sec, fn = fn } end,
   NewTimer = function(sec, fn) local t = { at = now + sec, fn = fn, Cancel = function(self) self.cancelled = true end }; timers[#timers + 1] = t; return t end,
 }
+local realFormat = dofile("tests/format_fake.lua")
+function BreakUpLargeNumbers(n)
+  local s = realFormat("%.0f", n)
+  local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+  return (out:gsub("^,", ""))
+end
 local libs = {}
 LibStub = setmetatable({ NewLibrary = function(_, name) libs[name] = libs[name] or {}; return libs[name] end },
   { __call = function(_, name) return assert(libs[name], "no library " .. name) end })
@@ -497,6 +511,44 @@ check("6 list fades in one after another", function()
   for i, r in ipairs(rows) do
     assert(near(look(r)[1], 1), "row " .. i .. " not fully visible at the end")
   end
+end)
+
+check("7 counter rolls to each total, keeps rolling through a call mid-roll, and passes 3 billion", function()
+  local fs = newFrame():CreateFontString()
+  local add = M.makeCounter(fs)
+  -- What the font string shows, every frame at 240 fps, as numbers.
+  local function shown()
+    local text = assert(fs.text, "shows no text")
+    assert(text:match("^[%d,]+$"), "not a whole number: " .. text)
+    return tonumber((text:gsub(",", "")))
+  end
+  local function roll(seconds)
+    local values = { fs.text and shown() or 0 }
+    for _ = 1, math.floor(seconds * 240) do
+      run(1 / 240, 240)
+      values[#values + 1] = shown()
+    end
+    return values
+  end
+  local function smooth(values, label)
+    local a, b = values[1], values[#values]
+    assert(middle(values) >= ANIMATED, "did not roll " .. label)
+    for i = 2, #values do
+      assert(values[i] >= values[i - 1], ("rolled back from %.0f to %.0f %s"):format(values[i - 1], values[i], label))
+      assert(values[i] - values[i - 1] <= 0.15 * (b - a), ("jumped from %.0f to %.0f %s"):format(values[i - 1], values[i], label))
+    end
+  end
+  add(1000)
+  local first = roll(1.5)
+  smooth(first, "to 1000")
+  assert(first[#first] == 1000, ("shows %.0f, want 1000"):format(first[#first]))
+  add(500)
+  local partway = roll(0.05)
+  add(3e9)
+  local rest = roll(4)
+  for _, v in ipairs(rest) do partway[#partway + 1] = v end
+  smooth(partway, "after a call mid-roll")
+  assert(partway[#partway] == 3000001500, ("shows %.0f, want 3000001500"):format(partway[#partway]))
 end)
 
 local failed = 0

@@ -32,4 +32,13 @@ function M.fadeListIn(rows)
     Poly(row):set({ alpha = 0 }):to({ alpha = 1 }, { duration = 0.3, delay = (i - 1) * 0.05 })
   end
 end
+function M.makeCounter(fs)
+  local m = Poly(fs):define({ total = 0 }, function(text, v) text:SetText(("%.0f"):format(v.total)) end)
+  m:set({ total = 0 })
+  local total = 0
+  return function(amount)
+    total = total + amount
+    m:to({ total = total })
+  end
+end
 return M
