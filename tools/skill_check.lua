@@ -15,197 +15,16 @@
 --      comes mid-roll. Totals can pass 3 billion.
 local libPath, answerPath = assert(arg[1], "Polymorph.lua"), assert(arg[2], "answer.lua")
 
-local combat, now, tick = false, 0, 1 / 60
-local events, timers = {}, {}
+-- The client is the shared fake in tests/fake_wow.lua. Answers may call more of
+-- the API than it models, and those calls do nothing. A call the client blocks
+-- in combat, or an error Polymorph reports, fails the check.
+local wow = dofile("tests/fake_wow.lua")
+wow.lenient = true
 local violations = {}
-unpack = unpack or table.unpack
+function wow.blocked(_, method) violations[#violations + 1] = method .. " on a protected frame in combat" end
+seterrorhandler(function(err) violations[#violations + 1] = tostring(err) end)
+local run, fire = wow.run, wow.fire
 
-local function noop() end
--- Any method we do not model is a no-op, so idiomatic extras do not crash.
-local Region = {}
-Region.__index = function(_, k)
-  local v = Region[k]
-  if v == nil and type(k) == "string" and k:match("^%u") then return noop end
-  return v
-end
-
-local function locked(f) return combat and f.protected end
-local function guard(f, what)
-  if locked(f) then violations[#violations + 1] = what .. " on a protected frame in combat" end
-end
-
-function Region:SetSize(w, h) guard(self, "SetSize"); self.w, self.h = w, h end
-function Region:SetWidth(w) guard(self, "SetWidth"); self.w = w end
-function Region:SetHeight(h) guard(self, "SetHeight"); self.h = h end
-function Region:GetWidth() return self.w end
-function Region:GetHeight() return self.h end
-function Region:GetSize() return self.w, self.h end
-function Region:SetAlpha(a) self.alpha = a end
-function Region:GetAlpha() return self.alpha end
-function Region:SetScale(s) guard(self, "SetScale"); self.s = s end
-function Region:GetScale() return self.s end
-function Region:ClearAllPoints() guard(self, "ClearAllPoints"); self.point = nil end
-function Region:SetPoint(point, a, b, c, d)
-  guard(self, "SetPoint")
-  local rel, relPoint, x, y
-  if type(a) == "number" then x, y = a, b
-  elseif type(b) == "number" then rel, x, y = a, b, c
-  else rel, relPoint, x, y = a, b, c, d end
-  self.point = { point, rel or self.parent, relPoint or point, x or 0, y or 0 }
-end
-function Region:SetAllPoints(rel) self:SetPoint("TOPLEFT", rel or self.parent, "TOPLEFT", 0, 0) end
-function Region:GetPoint() if self.point then return unpack(self.point, 1, 5) end end
-function Region:GetNumPoints() return self.point and 1 or 0 end
-function Region:Show() guard(self, "Show"); self.shown = true end
-function Region:Hide() guard(self, "Hide"); self.shown = false end
-function Region:SetShown(v) if v then self:Show() else self:Hide() end end
-function Region:IsShown() return self.shown end
-function Region:IsVisible() return self.shown and (not self.parent or self.parent:IsVisible()) end
-function Region:IsProtected() return self.protected end
-function Region:SetScript(name, fn) self.scripts[name] = fn end
-function Region:GetScript(name) return self.scripts[name] end
-function Region:HookScript(name, fn)
-  local old = self.scripts[name]
-  self.scripts[name] = old and function(...) old(...); fn(...) end or fn
-end
-function Region:RegisterEvent(e) events[e] = events[e] or {}; table.insert(events[e], self) end
-function Region:CreateTexture() return setmetatable({ scripts = {}, parent = self, shown = true, alpha = 1, w = 0, h = 0, s = 1 }, Region) end
-function Region:CreateFontString() return setmetatable({ scripts = {}, parent = self, shown = true, alpha = 1, w = 0, h = 0, s = 1 }, Region) end
-function Region:GetParent() return self.parent end
--- Frames have a kind from CreateFrame. Textures and font strings don't.
-function Region:IsObjectType(kind) return kind == "Frame" and self.kind ~= nil end
-function Region:SetText(text) self.text = text end
-function Region:GetText() return self.text end
-function Region:SetFormattedText(fmt, ...) self.text = fmt:format(...) end
--- The combat puppet: Polymorph steers a paused Translation and Scale. Only
--- their effect on where the frame draws matters here, so they are recorded.
--- Native animation groups, as measured in the client. Progress runs over the
--- duration, backwards when played in reverse, through the smoothing curve. A
--- Translation offset is in the frame's scaled units, a Scale grows the frame
--- around its origin, and an Alpha draws its own value in place of the frame's.
-local CURVES = {
-  NONE = function(p) return p end,
-  IN = function(p) return 1 - math.cos(p * math.pi / 2) end,
-  OUT = function(p) return math.sin(p * math.pi / 2) end,
-  IN_OUT = function(p) return (1 - math.cos(p * math.pi)) / 2 end,
-}
-local groups = {}
-function Region:CreateAnimationGroup()
-  local owner = self
-  local ag = setmetatable({ scripts = {}, anims = {}, elapsed = 0 }, Region)
-  owner.groups = owner.groups or {}
-  table.insert(owner.groups, ag)
-  table.insert(groups, ag)
-  function ag:CreateAnimation(kind)
-    local a = setmetatable({ kind = kind, duration = 1, smoothing = "NONE", ox = 0, oy = 0, k = 1,
-                             origin = { "CENTER", 0, 0 }, scripts = {} }, Region)
-    function a:SetDuration(d) self.duration = d end
-    function a:SetSmoothing(v) self.smoothing = v end
-    function a:SetSmoothProgress(v) self.forced = v end
-    function a:GetProgress()
-      local p = math.min(1, ag.elapsed / self.duration)
-      return ag.reverse and 1 - p or p
-    end
-    function a:GetSmoothProgress() return self.forced or CURVES[self.smoothing](self:GetProgress()) end
-    function a:SetOffset(x, y) self.ox, self.oy = x, y end
-    function a:SetScaleTo(x) self.k = x end
-    function a:SetOrigin(point, x, y) self.origin = { point, x or 0, y or 0 } end
-    function a:SetFromAlpha(v) self.from = v end
-    function a:SetToAlpha(v) self.to = v end
-    table.insert(ag.anims, a)
-    return a
-  end
-  function ag:Play(reverse)
-    self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
-    for _, a in ipairs(self.anims) do a.forced = nil end
-  end
-  function ag:Pause() self.paused = true end
-  function ag:Stop() self.playing = false end
-  function ag:IsPlaying() return self.playing end
-  return ag
-end
-local function advanceAnimations(dt)
-  for _, ag in ipairs(groups) do
-    if ag.playing and not ag.paused then
-      ag.elapsed = ag.elapsed + dt
-      local longest = 0
-      for _, a in ipairs(ag.anims) do longest = math.max(longest, a.duration) end
-      if ag.elapsed >= longest then
-        ag.playing = false
-        if ag.scripts.OnFinished then ag.scripts.OnFinished(ag) end
-      end
-    end
-  end
-end
--- What every playing group on the frame adds: translation, scale and its origin, alpha.
-function Region:Native()
-  local x, y, k, origin, alpha = 0, 0, 1, { "CENTER", 0, 0 }, nil
-  for _, ag in ipairs(self.groups or {}) do
-    if ag.playing then
-      for _, a in ipairs(ag.anims) do
-        local sp = a:GetSmoothProgress()
-        if a.kind == "Translation" then x, y = x + a.ox * sp, y + a.oy * sp
-        elseif a.kind == "Scale" then k, origin = k * (1 + (a.k - 1) * sp), a.origin
-        elseif a.kind == "Alpha" then alpha = a.from + (a.to - a.from) * sp end
-      end
-    end
-  end
-  return x, y, k, origin, alpha
-end
-
-local frames = {}
-function CreateFrame(kind, name, parent, template)
-  local f = setmetatable({ kind = kind, parent = parent, scripts = {}, shown = true, alpha = 1, w = 0, h = 0, s = 1,
-                           protected = type(template) == "string" and template:find("Secure") ~= nil }, Region)
-  frames[#frames + 1] = f
-  return f
-end
-UIParent = CreateFrame("Frame")
-UIParent.w, UIParent.h = 1000, 800
-
--- Where frames draw, in screen units: the anchor chain, sizes and scales.
-local function pointIn(left, bottom, w, h, point)
-  local x = point:find("LEFT") and left or point:find("RIGHT") and left + w or left + w / 2
-  local y = point:find("TOP") and bottom + h or point:find("BOTTOM") and bottom or bottom + h / 2
-  return x, y
-end
-function Region:EffectiveAlpha()
-  local own = select(5, self:Native()) or self.alpha
-  return own * (self.parent and self.parent:EffectiveAlpha() or 1)
-end
-function Region:EffectiveScale() return self.s * (self.parent and self.parent:EffectiveScale() or 1) end
-function Region:Rect()
-  if self == UIParent then return 0, 0, self.w, self.h end
-  local e, p = self:EffectiveScale(), assert(self.point, "frame has no anchor")
-  local w, h = self.w * e, self.h * e
-  local nx, ny, k, origin = self:Native()
-  local rl, rb, rw, rh = (p[2] or UIParent):Rect()
-  local ax, ay = pointIn(rl, rb, rw, rh, p[3])
-  local ox, oy = pointIn(0, 0, w, h, p[1])
-  local l, b = ax + (p[4] + nx) * e - ox, ay + (p[5] + ny) * e - oy
-  if k ~= 1 then
-    local gx, gy = pointIn(l, b, w, h, origin[1])
-    gx, gy = gx + origin[2] * e, gy + origin[3] * e
-    l, b, w, h = gx + (l - gx) * k, gy + (b - gy) * k, w * k, h * k
-  end
-  return l, b, w, h
-end
-function InCombatLockdown() return combat end
--- Polymorph reports errors it catches here, and they fail the check.
-function geterrorhandler() return function(err) violations[#violations + 1] = tostring(err) end end
-function debugprofilestop() return os.clock() * 1000 end
-function GetTime() return now end
-function GetTickTime() return tick end
-C_Timer = {
-  After = function(sec, fn) timers[#timers + 1] = { at = now + sec, fn = fn } end,
-  NewTimer = function(sec, fn) local t = { at = now + sec, fn = fn, Cancel = function(self) self.cancelled = true end }; timers[#timers + 1] = t; return t end,
-}
-local realFormat = dofile("tests/format_fake.lua")
-function BreakUpLargeNumbers(n)
-  local s = realFormat("%.0f", n)
-  local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
-  return (out:gsub("^,", ""))
-end
 local libs = {}
 LibStub = setmetatable({ NewLibrary = function(_, name) libs[name] = libs[name] or {}; return libs[name] end },
   { __call = function(_, name) return assert(libs[name], "no library " .. name) end })
@@ -214,32 +33,12 @@ assert(loadfile(libPath))("Polymorph", {})
 
 local M = assert(loadfile(answerPath))()
 
--- Runs frames as the client does: scripts, then animations, then drawing.
--- Code between calls runs at the start of the next frame, as an event does.
--- Timers run before the OnUpdates here. Their order in the client is unmeasured.
-local function run(seconds, fps)
-  local dt = 1 / (fps or 60)
-  for _ = 1, math.floor(seconds / dt + 0.5) do
-    for i = #timers, 1, -1 do
-      local t = timers[i]
-      if now >= t.at then table.remove(timers, i); if not t.cancelled then t.fn(t) end end
-    end
-    -- Every frame's OnUpdate runs, as in the game: Polymorph's driver and the answer's own.
-    for _, f in ipairs(frames) do
-      local fn = f.scripts.OnUpdate
-      if fn and f:IsVisible() then fn(f, tick) end
-    end
-    advanceAnimations(tick)
-    now, tick = now + dt, dt
-  end
-end
-local function fire(e) for _, f in ipairs(events[e] or {}) do local fn = f.scripts.OnEvent; if fn then fn(f, e) end end end
 local function near(a, b, eps) return math.abs(a - b) <= (eps or 0.01) end
 
 local results = {}
 local function check(name, fn)
   violations = {}
-  combat = false
+  wow.combat = false
   local ok, err = pcall(fn)
   -- A reported error came before whatever failed after it, so it is the cause.
   if #violations > 0 then ok, err = false, violations[1] end
@@ -251,14 +50,14 @@ local function newFrame(template)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
   return f
 end
-local function atRest(f) return near(f:EffectiveAlpha(), 1) and near(f.s, 1) end
+local function atRest(f) return near(f:VisualAlpha(), 1) and near(f.s, 1) end
 
 local function between(v, a, b) return v > math.min(a, b) + 0.01 and v < math.max(a, b) - 0.01 end
 -- What a frame draws: alpha as the player sees it (0 when hidden) and its
 -- rectangle on screen.
 local function look(f)
   local l, b, w, h = f:Rect()
-  return { f:IsVisible() and f:EffectiveAlpha() or 0, l, b, w, h, b + h }
+  return { f:IsVisible() and f:VisualAlpha() or 0, l, b, w, h, b + h }
 end
 -- Fields of a look: 1 alpha, 2 left, 3 bottom, 4 width, 5 height, 6 top.
 local ALL, SIZE, WIDTH, VERTICAL = { 1, 2, 3, 4, 5 }, { 4, 5 }, { 4 }, { 6 }
@@ -354,6 +153,7 @@ end)
 
 check("2 toast slides in from above and leaves upward after 3 s", function()
   local toast = newFrame()
+  toast:ClearAllPoints()
   toast:SetPoint("TOP", UIParent, "TOP", 0, -120)
   local _, b0, w0, h0 = toast:Rect()
   local top = b0 + h0
@@ -465,12 +265,12 @@ end)
 
 check("5 secure panel animates out and hides, in and out of combat, with no blocked calls", function()
   local panel = newFrame("SecureHandlerStateTemplate")
-  combat = true
+  wow.combat = true
   local n, _, _, _, back = transition(panel, function() M.closeSecurePanel(panel) end, 1)
   assert(not back, "came back while closing in combat")
   assert(n >= ANIMATED, "did not animate in combat")
   assert(look(panel)[1] < 0.01, "not faded in combat: alpha " .. look(panel)[1])
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(0.1)
   assert(not panel.shown, "not hidden after combat")
@@ -486,7 +286,7 @@ check("6 list fades in one after another", function()
   for i = 1, 5 do rows[i] = newFrame() end
   M.fadeListIn(rows)
   for i, r in ipairs(rows) do
-    assert(r:EffectiveAlpha() < 0.05, "row " .. i .. " did not start invisible: alpha " .. r:EffectiveAlpha())
+    assert(r:VisualAlpha() < 0.05, "row " .. i .. " did not start invisible: alpha " .. r:VisualAlpha())
   end
   -- Every frame for 2.5 s: once a row starts, it never dims below the most it
   -- has shown. Its fade, for the middle-of-travel rule, runs from its start

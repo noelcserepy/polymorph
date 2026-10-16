@@ -1,398 +1,52 @@
--- Offline tests for Polymorph.lua against a fake frame API. Runs on Lua 5.1+.
--- Usage: lua tests/core_test.lua Polymorph.lua
+-- Offline tests for Polymorph.lua against the fake client in tests/fake_wow.lua,
+-- which says where each behavior it models was measured. Runs on Lua 5.1+.
+-- Usage, from the repository root: lua tests/core_test.lua Polymorph.lua
 --        TEST="native slide" lua tests/core_test.lua Polymorph.lua
 
--- What the fake assumes about the game
---
--- Each behavior the fakes below copy from the client, with the in-game job that
--- measured it, or "unmeasured". The jobs and their notes are the maintainer's
--- private harness. A change to a fake updates its line here. The unmeasured
--- lines are the checklist for the next in-game session.
---
--- Clock and frame order:
--- GetTickTime() equals OnUpdate's elapsed, also in job code and C_Timer callbacks: tick_time.lua, 2026-10-15
--- GetTime() holds still within a frame and grows by OnUpdate's elapsed between frames: unmeasured
--- A group's elapsed read in OnUpdate is GetTime() minus GetTime() in the frame it was played: anim_clock.lua, 2026-10-15
--- Animations advance after scripts, so a group drawn in the frame it was played already counts it: anim_clock.lua, draw_lag.lua, 2026-10-15
--- Timer callbacks run before the frame's OnUpdate scripts: start_timing.lua, 2026-10-15 (60 of 60)
--- Event code runs before the frame's OnUpdate: unmeasured
--- A timer callback and an OnUpdate script in the same frame are separate callbacks: regions_gradient2.lua, 2026-10-15
--- C_Timer.After(0, fn) runs fn in the next frame: start_timing.lua, 2026-10-15 (60 of 60)
--- OnFinished fires in the animation step of the frame whose elapsed reaches the duration, before drawing: unmeasured
---
--- Combat:
--- A frame is locked when InCombatLockdown() and frame:IsProtected(), and a plain frame accepts everything: probe session 1, 2026-10-14
--- SetPoint, SetSize and Hide are blocked on a locked frame: probe session 1, 2026-10-14
--- SetWidth, SetHeight, SetScale and Show are blocked on a locked frame: unmeasured
--- SetAlpha, CreateAnimationGroup and native Alpha, Translation and Scale groups work on a locked frame: probe session 1, 2026-10-14
--- Writers work again when PLAYER_REGEN_ENABLED fires: combat.lua, 2026-10-14 (the library commits in that handler, 0 blocked actions)
--- InCombatLockdown() is false inside PLAYER_REGEN_ENABLED handlers: unmeasured
--- A texture or font string of a SecureActionButtonTemplate button reports IsProtected() false, before and in
---   combat, while the button reports true: regions.lua, regions_combat.lua, 2026-10-15
--- SetPoint, SetSize, SetWidth, SetHeight, SetScale, Show and Hide, each called once in combat on a texture of
---   such a button, raised 0 blocked actions: regions_combat.lua, 2026-10-15. Show, SetScale, SetWidth,
---   SetHeight and Hide read back applied. SetPoint and SetSize failed an exact comparison, which the same
---   calls fail out of combat too (30.000002 and 59.999905): regions_measure.lua, 2026-10-15
--- The same calls on a font string of a protected frame in combat: unmeasured. fakeRegion treats a region like a
---   frame, locked by its own IsProtected().
--- SetText, SetVertexColor and SetAlphaGradient on regions of protected frames in combat raised 0 blocked actions,
---   and the text and color read back changed: regions_combat.lua, 2026-10-15. SetTextColor in combat: unmeasured
--- Deliberate difference: a blocked call errors here. The game returns normally, skips it, fires ADDON_ACTION_BLOCKED and shows a popup: probe session 1, 2026-10-14
---
--- Getters:
--- GetPoint() ignores animation displacement: native_probe.lua, native_puppet.lua, combat.lua, 2026-10-14
--- GetAlpha(), GetScale() and GetWidth() read from OnUpdate report the frame's own values under native animations:
---   native_curves.lua, 2026-10-14. Read from a C_Timer callback, GetAlpha() reports the drawn alpha, on frames,
---   textures and font strings: regions_measure.lua, regions_gradient.lua, 2026-10-15. The fake always reports
---   the own value. The library reads GetAlpha() only for a property with no track.
--- GetHeight() does the same: unmeasured
--- GetAlpha() returns the alpha set, stored in steps of 1/255: SetAlpha(0.5) reads 0.50196, anchors_probe.lua, 2026-10-15
--- GetPoint() returns the offsets set within 3e-6: anchors_probe.lua, 2026-10-15. A texture's SetPoint(..., 100) reads 99.99999:
---   regions.lua, 2026-10-15. The fake returns offsets exactly, and the library allows 0.01
--- Other getters return exactly the value last set: unmeasured
--- GetNumPoints() counts the frame's anchors and GetPoint(i) returns the i-th, nil past the last: anchors_probe.lua, 2026-10-15
---
--- Anchors:
--- SetPoint() replaces the point of the same name in its place and keeps the frame's other points in order: anchors_probe.lua, 2026-10-15
--- Moving both anchors of a two-anchor frame by the same offset keeps its width: anchors_probe.lua, 2026-10-15
--- ClearAllPoints() removes every point: anchors_probe.lua, 2026-10-15 (the library does not call it)
--- ClearAllPoints() is blocked on a locked frame: unmeasured (the library does not call it)
--- IsShown() reports the frame's own shown flag: unmeasured
---
--- Native animations:
--- The NONE, IN, OUT and IN_OUT smoothing curves have the formulas in CURVES: native_curves.lua, 2026-10-14
--- GetSmoothProgress() is the curve applied to GetProgress(): native_curves.lua, 2026-10-14
--- Play(true) runs progress from 1 to 0 through the curve and fires OnFinished: native_reverse.lua, 2026-10-14
--- GetProgress() is elapsed / duration, capped at 1: unmeasured
--- Play() restarts from progress 0 and clears a SetSmoothProgress() value: unmeasured
--- Pause() holds the drawn displacement: native_probe.lua, 2026-10-14
--- SetSmoothProgress() on a paused animation sets its drawn progress: native_puppet.lua, 2026-10-14
--- A SetSmoothProgress() value holds while its group plays unpaused: unmeasured
--- SetOffset() and SetScaleTo() on a paused animation move the drawing live: native_puppet.lua, 2026-10-14
--- Stop() removes the displacement: native_puppet.lua, 2026-10-14
--- Stopping a paused Translation and calling SetPoint() at the same offset lands on the same pixel: native_probe.lua, 2026-10-14
--- Stop() does not fire OnFinished: unmeasured
--- SetPoint(final) then Play(true) from the start offset draws the start in the group's first frame from a
---   C_Timer callback: native_order.lua, 2026-10-15 (0 of 32 recorded starts misdrew). From OnUpdate it can
---   draw the offset against the anchor from before the frame's scripts for 1-2 frames (3 of 8 starts).
---   The fake misdraws every such start from OnUpdate, for one frame. Polymorph's start timer: native_contexts.lua,
---   2026-10-15 (96 recorded starts at 120 fps, called from a timer, an OnUpdate, a delay and onComplete, 0 flagged).
--- A finished group stops drawing, so the frame draws its own values again: native_order.lua, 2026-10-15 (SetPoint in OnFinished, no snap in 32 recorded finishes)
--- A group finishes when its longest animation ends: unmeasured
--- IsPlaying() is true while paused, and false after Stop() or finishing: unmeasured (the library does not call it)
--- Anchor offsets are in the frame's own scaled units: scale_units.lua, 2026-10-14
--- Translation offsets are in the frame's scaled units, and a Scale in the same group does not multiply them: scale_compose.lua, scale_units.lua, 2026-10-14
--- A Scale grows around its origin, CENTER by default, and SetOrigin(point) keeps that point still: scale_compose.lua, 2026-10-14
--- SetOrigin()'s x and y are in the frame's own units: unmeasured (the library passes 0, 0)
--- An Alpha animation's value replaces the frame's alpha: native_tweens.lua, 2026-10-15
--- Translation groups on one frame add up: native_tweens.lua, 2026-10-15
--- Two Translations in one group add up: unmeasured (the probe's group had finished)
--- Scale groups on one frame multiply, and the last playing Scale's origin wins: unmeasured
--- Of two playing Alpha animations on one frame, the last one created draws: unmeasured
--- A new animation lasts 1 s with NONE smoothing: unmeasured (the library sets both)
--- Textures and font strings have every method the library calls: regions.lua, 2026-10-15
--- Polymorph's native Alpha and Translation tweens start and play on textures and font strings, and draw at the
---   same x and brightness as a Lua tween on the same curve: regions_measure.lua, 2026-10-15
--- Scale animations on textures and font strings: unmeasured
---
--- Region methods:
--- FontString:SetAlphaGradient(start, length) shows `start` characters and fades the next `length` out. It counts
---   on across wrapped lines, a UTF-8 character counts once, and |c color codes don't count:
---   regions_measure.lua, regions_gradient.lua, 2026-10-15. ClearAlphaGradient() shows it all: regions.lua, 2026-10-15
--- SetText, even of the same string, clears the drawn gradient, and a gradient set later in the same callback
---   doesn't draw. One set in a later callback, such as an OnUpdate after a timer in the same frame, does:
---   regions_gradient.lua, regions_gradient2.lua, 2026-10-15. The fake models callbacks as test code, each
---   timer, and the driver's OnUpdate.
---
--- Errors:
--- geterrorhandler() returns the handler that seterrorhandler() installed, and calling it reports the error:
---   errors.lua, 2026-10-15 (both reports Polymorph caught reached the job's handler)
---
--- Strings:
--- string.format errors on %d and %i outside the 32-bit range: unmeasured
---
--- The fake's asserts on SetScaleFrom(1, 1), uniform SetScaleTo() and known smoothing names check the
--- library's own calls, and claim nothing about the game. It does not model the per-addon caps of 2000
--- animation groups and 500 timers, measured in the startup log on 2026-10-14.
-
 local path = assert(arg[1], "path to Polymorph.lua")
+local wow = dofile("tests/fake_wow.lua")
+local run, fire = wow.run, wow.fire
+assert(not pcall(string.format, "%d", 2 ^ 31) and pcall(string.format, "%d", 2 ^ 31 - 1), "%d fake")
 
-local combat = false
-local driverScript
-local eventHandlers = {}
-_G.InCombatLockdown = function() return combat end
 -- The game's error handler. Each test fails on an error it didn't take from here.
 local reported = {}
-_G.geterrorhandler = function()
-  return function(err) reported[#reported + 1] = tostring(err) end
-end
-_G.debugprofilestop = function() return os.clock() * 1000 end
-local clock, tick = 0, 1 / 60
-_G.GetTime = function() return clock end
-_G.GetTickTime = function() return tick end
-_G.CreateFrame = function()
-  local f = {}
-  function f:SetScript(name, fn)
-    if name == "OnUpdate" then driverScript = fn else self.onEvent = fn end
-  end
-  function f:RegisterEvent(e)
-    eventHandlers[e] = eventHandlers[e] or {}
-    table.insert(eventHandlers[e], self)
-  end
-  return f
-end
-local function fire(e)
-  for _, f in ipairs(eventHandlers[e] or {}) do f.onEvent(f, e) end
-end
-local frameNumber, timers = 0, {}
--- Which callback the game is in. SetText clears the gradient for the rest of it.
-local callback = 0
-_G.C_Timer = {
-  After = function(seconds, fn)
-    timers[#timers + 1] = { due = clock + seconds, frame = frameNumber, fn = fn }
-  end,
-}
--- Runs the timers due this frame, never one made in this frame.
-local function runTimers()
-  local due = {}
-  for i = #timers, 1, -1 do
-    local t = timers[i]
-    if t.frame < frameNumber and t.due <= clock then
-      table.remove(timers, i)
-      table.insert(due, 1, t)
-    end
-  end
-  for _, t in ipairs(due) do
-    callback = callback + 1
-    t.fn()
-  end
-end
--- The recorded misdraw: a Translation group played from OnUpdate draws its first
--- frame against the anchor the frame had before that frame's scripts ran.
-local inOnUpdate, misdrawn = false, {}
-local function clearMisdraws()
-  for _, f in ipairs(misdrawn) do f.pointBefore, f.staleAnchor = nil, nil end
-  misdrawn = {}
-end
+seterrorhandler(function(err) reported[#reported + 1] = tostring(err) end)
 
--- The game's smoothing curves, measured in native_curves.lua.
-local CURVES = {
-  NONE = function(p) return p end,
-  IN = function(p) return 1 - math.cos(p * math.pi / 2) end,
-  OUT = function(p) return math.sin(p * math.pi / 2) end,
-  IN_OUT = function(p) return (1 - math.cos(p * math.pi)) / 2 end,
-}
-local allGroups = {}
--- Native animations advance after the frame's scripts, as anim_clock.lua measured.
--- When in the frame OnFinished fires is unmeasured.
-local function advanceAnimations(dt)
-  for _, ag in ipairs(allGroups) do
-    if ag.playing and not ag.paused then
-      ag.elapsed = ag.elapsed + dt
-      local longest = 0
-      for _, a in ipairs(ag.anims) do longest = math.max(longest, a.duration) end
-      if ag.elapsed >= longest then
-        ag.playing = false
-        if ag.onFinished then ag.onFinished(ag) end
-      end
-    end
+-- Counts the calls of `method` that went through in `field`.
+local function count(r, method, field)
+  local call = r[method]
+  r[field] = 0
+  r[method] = function(self, ...)
+    call(self, ...)
+    self[field] = self[field] + 1
   end
 end
-
+-- A 100x50 frame anchored CENTER (10, 20), protected if asked.
 local function fakeFrame(protected)
-  local f = { alpha = 1, w = 100, h = 50, s = 1, points = { { "CENTER", nil, "CENTER", 10, 20 } }, pointCalls = 0 }
-  function f:GetAlpha() return self.alpha end
-  -- The client stores alpha in steps of 1/255.
-  function f:SetAlpha(v) self.alpha = math.floor(v * 255 + 0.5) / 255 end
-  function f:GetWidth() return self.w end
-  function f:SetWidth(v) assert(not (combat and protected), "SetWidth while locked"); self.w = v end
-  function f:GetHeight() return self.h end
-  function f:SetHeight(v) assert(not (combat and protected), "SetHeight while locked"); self.h = v end
-  f.sizeCalls = 0
-  function f:SetSize(w, h)
-    assert(not (combat and protected), "SetSize while locked")
-    self.w, self.h = w, h
-    self.sizeCalls = self.sizeCalls + 1
-  end
-  function f:GetScale() return self.s end
-  function f:SetScale(v) assert(not (combat and protected), "SetScale while locked"); self.s = v end
-  -- SetPoint replaces the point of the same name in its place, or adds one.
-  function f:GetNumPoints() return #self.points end
-  function f:GetPoint(i)
-    local p = self.points[i or 1]
-    if p then return unpack(p, 1, 5) end
-  end
-  function f:SetPoint(a, b, c, x, y)
-    assert(not (combat and protected), "SetPoint while locked")
-    if inOnUpdate and not self.pointBefore then
-      self.pointBefore = self.points[1]
-      misdrawn[#misdrawn + 1] = self
-    end
-    local i = #self.points + 1
-    for j, p in ipairs(self.points) do
-      if p[1] == a then i = j end
-    end
-    self.points[i] = { a, b, c, x, y }
-    self.pointCalls = self.pointCalls + 1
-  end
-  function f:ClearAllPoints()
-    assert(not (combat and protected), "ClearAllPoints while locked")
-    self.points = {}
-  end
-  function f:IsProtected() return protected end
-  function f:IsObjectType(kind) return kind == "Frame" end
-  function f:GetParent() return nil end
-  -- Native animation groups. Progress runs over the duration, backwards when
-  -- played in reverse, through the smoothing curve. A Translation offset is in
-  -- the frame's scaled units and ignores any Scale. A Scale grows the frame
-  -- around its origin, CENTER by default. An Alpha draws its own value in place
-  -- of the frame's. Translation groups on one frame add up. How Scale and Alpha
-  -- groups combine is unmeasured. The list at the top says which parts are measured.
-  local groups = {}
-  function f:CreateAnimationGroup()
-    local ag = { playing = false, paused = false, reverse = false, elapsed = 0, anims = {} }
-    groups[#groups + 1] = ag
-    allGroups[#allGroups + 1] = ag
-    function ag:CreateAnimation(kind)
-      local a = { kind = kind, duration = 1, smoothing = "NONE", ox = 0, oy = 0, k = 1, origin = { "CENTER", 0, 0 } }
-      function a:SetDuration(d) self.duration = d end
-      function a:SetSmoothing(v) assert(CURVES[v], v); self.smoothing = v end
-      function a:SetSmoothProgress(v) self.forced = v end
-      function a:GetProgress()
-        local p = math.min(1, ag.elapsed / self.duration)
-        return ag.reverse and 1 - p or p
-      end
-      function a:GetSmoothProgress() return self.forced or CURVES[self.smoothing](self:GetProgress()) end
-      function a:SetScaleFrom(x, y) assert(x == 1 and y == 1) end
-      function a:SetScaleTo(x, y) assert(x == y); self.k = x end
-      function a:SetOrigin(point, x, y) self.origin = { point, x or 0, y or 0 } end
-      function a:SetOffset(x, y) self.ox, self.oy = x, y end
-      function a:SetFromAlpha(v) self.from = v end
-      function a:SetToAlpha(v) self.to = v end
-      ag.anims[#ag.anims + 1] = a
-      return a
-    end
-    function ag:Play(reverse)
-      self.playing, self.paused, self.reverse, self.elapsed = true, false, reverse or false, 0
-      for _, a in ipairs(self.anims) do
-        a.forced = nil
-        if inOnUpdate and a.kind == "Translation" then
-          f.staleAnchor = f.pointBefore or f.points[1]
-          misdrawn[#misdrawn + 1] = f
-        end
-      end
-    end
-    function ag:Pause() self.paused = true end
-    function ag:Stop() self.playing = false end
-    function ag:IsPlaying() return self.playing end
-    function ag:SetScript(name, fn) assert(name == "OnFinished"); self.onFinished = fn end
-    return ag
-  end
-  -- What every playing group adds: translation, scale and its origin, alpha.
-  function f:Native()
-    local x, y, k, origin, alpha = 0, 0, 1, { "CENTER", 0, 0 }, nil
-    for _, ag in ipairs(groups) do
-      if ag.playing then
-        for _, a in ipairs(ag.anims) do
-          local sp = a:GetSmoothProgress()
-          if a.kind == "Translation" then
-            x, y = x + a.ox * sp, y + a.oy * sp
-          elseif a.kind == "Scale" then
-            k, origin = k * (1 + (a.k - 1) * sp), a.origin
-          elseif a.kind == "Alpha" then
-            alpha = a.from + (a.to - a.from) * sp
-          end
-        end
-      end
-    end
-    return x, y, k, origin, alpha
-  end
-  -- Where a named point of the frame sits, relative to its center, in its own units.
-  local function pointOffset(point, w, h)
-    local x = point:find("LEFT") and -w / 2 or point:find("RIGHT") and w / 2 or 0
-    local y = point:find("TOP") and h / 2 or point:find("BOTTOM") and -h / 2 or 0
-    return x, y
-  end
-  -- Where the anchor point draws, in parent units, and the drawn scale and alpha.
-  function f:Visual()
-    local nx, ny, k, o = self:Native()
-    local s = self.s
-    local point = self.staleAnchor or self.points[1]
-    local ax, ay = (point[4] + nx) * s, (point[5] + ny) * s
-    local px, py = pointOffset(point[1], self.w, self.h)
-    local ox, oy = pointOffset(o[1], self.w, self.h)
-    ox, oy = ox + o[2], oy + o[3]
-    -- The origin stays put and everything else scales away from it by k.
-    local originX, originY = ax + (ox - px) * s, ay + (oy - py) * s
-    return originX + (ax - originX) * k, originY + (ay - originY) * k
-  end
-  function f:VisualX() return (self:Visual()) end
-  function f:VisualY() return select(2, self:Visual()) end
-  function f:VisualScale() return self.s * select(3, self:Native()) end
-  function f:VisualAlpha() return select(5, self:Native()) or self.alpha end
-  f.shown = true
-  f.hideCalls = 0
-  function f:IsShown() return self.shown end
-  function f:Show() assert(not (combat and protected), "Show while locked"); self.shown = true end
-  function f:Hide()
-    assert(not (combat and protected), "Hide while locked")
-    self.shown = false
-    self.hideCalls = self.hideCalls + 1
-  end
+  local f = CreateFrame("Frame")
+  f.protected = protected or false
+  f.w, f.h, f.points = 100, 50, { { "CENTER", nil, "CENTER", 10, 20 } }
+  count(f, "SetPoint", "pointCalls")
+  count(f, "SetSize", "sizeCalls")
+  count(f, "Hide", "hideCalls")
   return f
 end
-unpack = unpack or table.unpack
-
--- A texture or font string of `parent`. Like a frame, it is locked by its own
--- IsProtected(), which is false on a protected button as measured. `gradient`
--- is what draws: SetText clears it, and a gradient set later in the same
--- callback doesn't draw.
-local function fakeRegion(parent, protected)
-  local r = fakeFrame(protected)
-  function r:IsObjectType(kind) return kind == "Region" end
-  function r:GetParent() return parent end
-  function r:SetText(text)
-    self.text, self.gradient, self.textCallback = text, nil, callback
-  end
-  function r:GetText() return self.text end
-  function r:SetAlphaGradient(start, length)
-    if self.textCallback ~= callback then self.gradient = { start, length } end
-  end
-  function r:ClearAlphaGradient() self.gradient = nil end
-  r.color = { 1, 1, 1 }
-  function r:SetVertexColor(red, green, blue) self.color = { red, green, blue } end
-  function r:GetVertexColor() return unpack(self.color) end
+-- A texture of `parent`, placed like fakeFrame's frames. It has the font
+-- string methods too, and its own IsProtected() is false, as measured.
+local function fakeRegion(parent)
+  local r = parent:CreateTexture()
+  r.w, r.h, r.points = 100, 50, { { "CENTER", nil, "CENTER", 10, 20 } }
+  count(r, "SetPoint", "pointCalls")
+  count(r, "SetSize", "sizeCalls")
+  count(r, "Hide", "hideCalls")
   return r
 end
-
-dofile("tests/format_fake.lua")
-assert(not pcall(string.format, "%d", 2 ^ 31) and pcall(string.format, "%d", 2 ^ 31 - 1), "%d fake")
 
 local ns = { dev = true }
 assert(loadfile(path))("Polymorph", ns)
 local Poly = ns.Polymorph
-
--- Runs frames as the client does: timers, then OnUpdate, then animations, then
--- drawing. Test code between calls runs at the start of the next frame, as an
--- event does, so GetTickTime() is that frame's elapsed time and Visual() what
--- the last frame drew. That events and timers run before OnUpdate is unmeasured.
-local function run(seconds, fps)
-  local dt = 1 / (fps or 60)
-  for _ = 1, math.floor(seconds / dt + 0.5) do
-    clearMisdraws()
-    runTimers()
-    if driverScript then
-      callback = callback + 1
-      inOnUpdate = true
-      driverScript(nil, tick)
-      inOnUpdate = false
-    end
-    advanceAnimations(tick)
-    clock, tick = clock + dt, dt
-    frameNumber = frameNumber + 1
-    callback = callback + 1 -- test code after this runs as the next frame's event
-  end
-end
+-- Whether the driver's OnUpdate is set.
+local function driving() return Poly._driver:GetScript("OnUpdate") ~= nil end
 
 local function near(a, b, eps) return math.abs(a - b) <= (eps or 1e-6) end
 local passed = 0
@@ -416,7 +70,7 @@ test("spring settles exactly and the driver stops", function()
   Poly(f):to({ alpha = 1 })
   run(2)
   assert(f.alpha == 1, f.alpha)
-  assert(driverScript == nil, "driver still running")
+  assert(not driving(), "driver still running")
   assert(Poly.stats().active == 0)
 end)
 
@@ -454,13 +108,13 @@ end)
 
 test("protected frame in combat: x moves through the puppet, width waits", function()
   local f = fakeFrame(true)
-  combat = true
+  wow.combat = true
   Poly(f):to({ alpha = 0, x = 50, width = 160 }, { duration = 0.2 })
   run(0.5)
   assert(f.alpha == 0, "alpha did not animate in combat")
   assert(f.pointCalls == 0 and f.w == 100, "layout written while locked")
   assert(f:VisualX() == 60, "puppet did not show x: " .. f:VisualX())
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(f.points[1][4] == 60 and f:Native() == 0 and f:VisualX() == 60, "commit moved the frame")
   run(0.5)
@@ -471,7 +125,7 @@ test("protected frame in combat: scale draws through the puppet and hands over w
   local f = fakeFrame(true)
   f.points = { { "TOPLEFT", nil, "TOPLEFT", 10, 20 } } -- a corner anchor, so the scale origin matters
   local m = Poly(f)
-  combat = true
+  wow.combat = true
   m:to({ scale = 2, x = 30 }, { duration = 1, ease = "linear" })
   run(0.5)
   local s, x = m:get("scale"), m:get("x")
@@ -479,7 +133,7 @@ test("protected frame in combat: scale draws through the puppet and hands over w
   assert(near(f:VisualScale(), s), "puppet scale " .. f:VisualScale() .. " vs " .. s)
   -- Where SetScale(s) with the anchor at 10 + x would draw it.
   assert(near(f:VisualX(), (10 + x) * s) and near(f:VisualY(), 20 * s), "anchor point " .. f:VisualX() .. "," .. f:VisualY())
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(f.s == s and select(3, f:Native()) == 1 and f:Native() == 0, "not committed")
   assert(near(f:VisualX(), (10 + x) * s) and near(f:VisualY(), 20 * s), "jump at handover")
@@ -489,12 +143,12 @@ end)
 
 test("combat ending mid-animation hands over without a jump", function()
   local f = fakeFrame(true)
-  combat = true
+  wow.combat = true
   Poly(f):to({ x = 100 }, { duration = 1, ease = "linear" })
   run(0.5)
   local mid = f:VisualX()
   assert(f.pointCalls == 0 and mid > 40 and mid < 70, "puppet not tracking: " .. mid)
-  combat = false
+  wow.combat = false
   run(1 / 60)
   assert(f:Native() == 0 and math.abs(f:VisualX() - mid) < 2, "jump at handover")
   run(1)
@@ -519,7 +173,7 @@ test("native tween: drawn by the game on the measured curve, no Lua per frame", 
   -- It holds for this frame, and the timer starts it in the next.
   run(1 / 60)
   assert(f:VisualAlpha() == 0 and f:VisualX() == 10, "moved before the start timer")
-  assert(driverScript == nil, "driver still running for native tweens")
+  assert(not driving(), "driver still running for native tweens")
   assert(Poly.stats().active == 1, "stats() does not count a natively moving frame")
   run(1 / 60)
   assert(f.alpha == 1 and f.points[1][4] == 110, "final values not written first")
@@ -666,7 +320,7 @@ test("native tween on a protected frame: combat midway blocks nothing, retarget 
   local m = Poly(f)
   m:to({ x = 100 }, { duration = 1, ease = "linear" })
   run(0.3)
-  combat = true
+  wow.combat = true
   run(0.2)
   local drawn = f:VisualX()
   assert(near(drawn, 10 + 100 * (0.5 - 1 / 60), 1e-6), "native move stopped in combat: " .. drawn)
@@ -674,7 +328,7 @@ test("native tween on a protected frame: combat midway blocks nothing, retarget 
   assert(near(f:VisualX(), drawn), "jump when the puppet took over")
   run(1)
   assert(f:VisualX() == 10, f:VisualX())
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(f.points[1][4] == 10 and f:Native() == 0)
 end)
@@ -685,14 +339,14 @@ test("native tween on a protected frame: scale in combat composes with the drawn
     local m = Poly(f)
     m:to({ x = 100, y = 100 }, { duration = 1, ease = "linear" })
     run(0.5)
-    combat = true
+    wow.combat = true
     if change == "set" then m:set({ scale = 2 }) else m:to({ scale = 2 }, { duration = 0.5, ease = "linear" }) end
     run(0.25)
     local s = m:get("scale")
     assert(near(f:VisualX(), (10 + m:get("x")) * s, 1e-6) and near(f:VisualY(), (20 + m:get("y")) * s, 1e-6),
       change .. ": drawn " .. f:VisualX() .. "," .. f:VisualY() .. " want " .. (10 + m:get("x")) * s .. "," .. (20 + m:get("y")) * s)
     run(2)
-    combat = false
+    wow.combat = false
     fire("PLAYER_REGEN_ENABLED")
     assert(near(f:VisualX(), 220) and near(f:VisualY(), 240) and f.s == 2, change .. ": did not land")
   end
@@ -705,14 +359,14 @@ test("native tween handed to Lua in combat keeps its timeline", function()
   local done = 0
   m:to({ x = 100, y = 100 }, { duration = 1, ease = "linear", onComplete = function() done = done + 1 end })
   run(0.5)
-  combat = true
+  wow.combat = true
   m:set({ scale = 2 })
   local before = m:get("x")
   run(1 / 60)
   assert(m:get("x") > before and near(f:VisualX(), (10 + m:get("x")) * 2, 1e-6), "restarted: " .. before .. " -> " .. m:get("x"))
   run(0.5 + 1 / 60) -- it started a frame after the call, and one more frame absorbs clock rounding
   assert(not m:isMoving() and done == 1 and near(f:VisualX(), 220), "did not end on time")
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
 
   -- Combat ending right after the handover: get() still matches the drawing.
@@ -720,9 +374,9 @@ test("native tween handed to Lua in combat keeps its timeline", function()
   m = Poly(f)
   m:to({ x = 100 }, { duration = 1, ease = "linear" })
   run(0.5)
-  combat = true
+  wow.combat = true
   m:set({ scale = 2 })
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(1 / 60)
   assert(near(f:VisualX(), (10 + m:get("x")) * m:get("scale"), 1e-6), "get " .. m:get("x") .. " vs drawn " .. f:VisualX())
@@ -733,11 +387,11 @@ test("native tween handed to Lua in combat keeps its timeline", function()
   done = 0
   m:to({ x = 100, y = 100 }, { duration = 1, ease = "linear", onComplete = function() done = done + 1 end })
   run(0.5)
-  combat = true
+  wow.combat = true
   m:to({ scale = 2 }, { duration = 0 })
   run(2)
   assert(not m:isMoving() and done == 1 and m:get("x") == 100 and m:get("y") == 100, "stranded at " .. m:get("x"))
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
 end)
 
@@ -749,13 +403,13 @@ test("native tween handed to the puppet mid-update moves one frame's worth, not 
     m:to({ x = 100 }, { duration = 1, ease = "linear" })
     m:to(other, { duration = 2, ease = "outCubic" })
     run(0.5, 10)
-    combat = true
+    wow.combat = true
     run(0.1, 10)
     -- x held for the first frame, so it is one frame behind the clock.
     assert(near(m:get("x"), 50, 1e-6), "x " .. m:get("x") .. " at t = 0.6")
     run(0.3, 10)
     assert(near(m:get("x"), 80, 1e-6), "x " .. m:get("x") .. " at t = 0.9")
-    combat = false
+    wow.combat = false
     fire("PLAYER_REGEN_ENABLED")
     run(2)
   end
@@ -780,12 +434,12 @@ test("native tween handed to Lua: a delay waits and velocity carries over", func
   m = Poly(f)
   m:to({ x = 100 }, { duration = 1, ease = "linear" })
   run(0.5)
-  combat = true
+  wow.combat = true
   m:to({ scale = 2 }, { duration = 0.5 })
   run(1 / 60)
   local _, velocity = m:get("x")
   assert(near(velocity, 100, 1e-6), "velocity " .. velocity .. " after the handover")
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(2)
 end)
@@ -925,11 +579,11 @@ end)
 test("protected frame: an anchor set by secure code in combat wins when combat ends", function()
   local f = fakeFrame(true)
   local m = Poly(f)
-  combat = true
+  wow.combat = true
   m:to({ x = 50 }, { duration = 0.2 })
   run(0.5)
   f.points = { { "TOPLEFT", "header", "TOPLEFT", 0, -36 } } -- a secure group header sorts its children
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   local p = f.points[1]
   assert(#f.points == 1 and p[1] == "TOPLEFT" and p[4] == 0 and p[5] == -36, "commit overwrote the header's anchor")
@@ -939,7 +593,7 @@ end)
 test("protected frame: a call in combat after secure code moved the frame draws from the new anchor", function()
   local f = fakeFrame(true)
   local m = Poly(f)
-  combat = true
+  wow.combat = true
   m:to({ x = 50 }, { duration = 0.2 })
   run(0.5)
   f.points = { { "CENTER", nil, "CENTER", 200, 20 } } -- a secure header moves it
@@ -947,7 +601,7 @@ test("protected frame: a call in combat after secure code moved the frame draws 
   m:to({ x = 30 }, { duration = 0.2 })
   run(0.5)
   assert(f.pointCalls == 0 and f:VisualX() == 230, "drew at " .. f:VisualX())
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(f.points[1][4] == 230 and f:Native() == 0, "not committed at the new anchor")
 end)
@@ -1025,11 +679,11 @@ end)
 test("a frame whose combat-end commit throws runs no deferred hide or show", function()
   local f = fakeFrame(true)
   local m = Poly(f)
-  combat = true
+  wow.combat = true
   m:hide("below", { duration = 0.1 })
   run(0.3)
   function f:SetPoint() error("anchor family connection") end
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   takeReports(1)
   assert(f.shown, "halted frame still ran its deferred hide")
@@ -1039,12 +693,12 @@ test("a frame whose combat-end commit throws runs no deferred hide or show", fun
   local g = fakeFrame(true)
   g.shown = false
   local n = Poly(g)
-  combat = true
+  wow.combat = true
   n:to({ x = 50 }, { duration = 0.1 })
   n:show("fade", { duration = 1 })
   run(0.3)
   function g:SetPoint() error("anchor family connection") end
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   takeReports(1)
   assert(not g.shown and not n:isMoving(), "deferred show restarted the halted frame")
@@ -1054,7 +708,7 @@ test("a frame whose update throws in combat runs no deferred show when combat en
   local f = fakeFrame(true)
   f.shown = false
   local m = Poly(f)
-  combat = true
+  wow.combat = true
   m:show("fade")
   local setAlpha = f.SetAlpha
   function f:SetAlpha() error("alpha failed") end
@@ -1062,7 +716,7 @@ test("a frame whose update throws in combat runs no deferred show when combat en
   run(1 / 60)
   takeReports(1)
   f.SetAlpha = setAlpha
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(0.1)
   assert(not f.shown and not m:isMoving(), "deferred show restarted the halted frame")
@@ -1138,7 +792,7 @@ local function assertStartedOver(m, f, path)
   local nx, ny, k, _, drawnAlpha = f:Native()
   assert(nx == 0 and ny == 0 and k == 1 and drawnAlpha == nil, path .. ": an animation still draws")
   local x, y, alpha, w, h, scale, shown = f.points[1][4], f.points[1][5], f.alpha, f.w, f.h, f.s, f.shown
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(0.5)
   assert(f.points[1][4] == x and f.points[1][5] == y and f.alpha == alpha and f.w == w and f.h == h and f.s == scale and f.shown == shown,
@@ -1178,11 +832,11 @@ test("a halted frame recovers through its public handle on every halt path", fun
 
   f = fakeFrame(true)
   m = Poly(f)
-  combat = true
+  wow.combat = true
   m:to({ x = 40, scale = 1.2, width = 150 })
   run(0.1)
   restore = breakSetPoint(f)
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   takeReports(1)
   restore()
@@ -1191,7 +845,7 @@ test("a halted frame recovers through its public handle on every halt path", fun
   f = fakeFrame(true)
   f.shown = false
   m = Poly(f)
-  combat = true
+  wow.combat = true
   m:show("below")
   m:to({ x = 40, scale = 1.2 })
   run(0.1)
@@ -1264,10 +918,10 @@ test("SetPoint hooks can read both offsets through every commit producer", funct
       if path == "set" then
         m:set({ [axis] = 100 })
       else
-        combat = path == "combat end"
+        wow.combat = path == "combat end"
         m:to({ [axis] = 100 }, { duration = 0.2, ease = path == "native" and "linear" or "outCubic", onComplete = function() done = done + 1 end })
         run(0.05)
-        combat = false
+        wow.combat = false
         if path == "combat end" then fire("PLAYER_REGEN_ENABLED") end
         run(0.4)
         assert(done == 1, path .. ": reading interrupted completion")
@@ -1283,10 +937,11 @@ end)
 -- Discover every frame writer from the fake, rather than maintaining a second
 -- list that silently misses a new property. Each path installs all the hooks;
 -- the first invocation of the selected writer makes a nested public call.
+-- Every writer the library calls must get one.
 test("reentrant hooks on every frame writer preserve the last public call", function()
   local paths = { "driver", "width", "height", "set", "native start", "native retarget", "stop one", "stop all", "show", "hide", "deferred show", "deferred hide", "combat end" }
-  local writers, exercised = {}, {}
-  for name in pairs(fakeFrame()) do
+  local writers, exercised, called = {}, {}, {}
+  for name in pairs(wow.Region) do
     if name:match("^Set") or name == "Show" or name == "Hide" or name == "ClearAllPoints" then writers[#writers + 1] = name end
   end
   table.sort(writers)
@@ -1294,7 +949,7 @@ test("reentrant hooks on every frame writer preserve the last public call", func
   for _, path in ipairs(paths) do
     for _, writer in ipairs(writers) do
       for _, action in ipairs({ "read", "set", "to", "show", "hide", "another frame" }) do
-        combat = false
+        wow.combat = false
         local f = fakeFrame(true)
         local m, nested, done, originalDone = Poly(f), false, 0, 0
         local other, otherDone = fakeFrame(), 0
@@ -1322,6 +977,7 @@ test("reentrant hooks on every frame writer preserve the last public call", func
           local all = true
           for key, value in pairs(expected) do all = all and near(shown[key], value, key == "alpha" and 1 / 510 or 1e-6) end
           reached = reached or all
+          called[name] = true
           if nested or name ~= writer then return end
           nested = true
           exercised[name] = true
@@ -1370,14 +1026,14 @@ test("reentrant hooks on every frame writer preserve the last public call", func
         elseif path == "show" then m:show(values, { duration = 0.01, onComplete = arrived })
         elseif path == "hide" then m:hide(values, { duration = 0.01, onComplete = arrived })
         elseif path == "deferred show" then
-          combat = true; m:show(values, { duration = 0.01, onComplete = arrived })
-          combat = false; fire("PLAYER_REGEN_ENABLED")
+          wow.combat = true; m:show(values, { duration = 0.01, onComplete = arrived })
+          wow.combat = false; fire("PLAYER_REGEN_ENABLED")
         elseif path == "deferred hide" then
-          combat = true; m:hide(values, { duration = 0.01, onComplete = arrived }); run(0.1)
-          combat = false; fire("PLAYER_REGEN_ENABLED")
+          wow.combat = true; m:hide(values, { duration = 0.01, onComplete = arrived }); run(0.1)
+          wow.combat = false; fire("PLAYER_REGEN_ENABLED")
         else
-          combat = true; m:to(values, { duration = 0.2, onComplete = arrived }); run(0.05)
-          combat = false; fire("PLAYER_REGEN_ENABLED")
+          wow.combat = true; m:to(values, { duration = 0.2, onComplete = arrived }); run(0.05)
+          wow.combat = false; fire("PLAYER_REGEN_ENABLED")
         end
         run(1.5)
         local label = path .. "/" .. writer .. "/" .. action
@@ -1393,6 +1049,8 @@ test("reentrant hooks on every frame writer preserve the last public call", func
         if nested and action == "another frame" then assert(other.w == 310 and otherDone == 1 and not Poly(other):isMoving(), label .. ": other frame lost") end
         assert(not m:isMoving(), label .. ": still moving")
         assert(#reported == 0, label .. ": " .. tostring(reported[1]))
+        -- The path never called this writer, so every other action would repeat this run.
+        if not nested then break end
       end
     end
   end
@@ -1408,7 +1066,11 @@ test("reentrant hooks on every frame writer preserve the last public call", func
   end
   f:ClearAllPoints()
   assert(f:GetNumPoints() == 0 and m:get("x") == 30, "clear hook invented an anchor")
-  for _, writer in ipairs(writers) do assert(exercised[writer], "unexercised writer " .. writer) end
+  called.ClearAllPoints = true
+  for writer in pairs(called) do assert(exercised[writer], "unexercised writer " .. writer) end
+  for _, writer in ipairs({ "SetAlpha", "SetWidth", "SetHeight", "SetSize", "SetScale", "SetPoint", "Show", "Hide" }) do
+    assert(called[writer], "the library never called " .. writer)
+  end
 end)
 
 -- A call from an ease runs once the update that called the ease is done. The
@@ -1474,8 +1136,8 @@ test("a set() from a SetPoint hook moves both anchors of a two-point frame, on e
     end
     if path == "set" then m:set({ x = 100 })
     elseif path == "combat end" then
-      combat = true; m:to({ x = 100 }); run(0.05)
-      combat = false; fire("PLAYER_REGEN_ENABLED")
+      wow.combat = true; m:to({ x = 100 }); run(0.05)
+      wow.combat = false; fire("PLAYER_REGEN_ENABLED")
     else
       m:to({ x = 100 }, path == "native" and { duration = 0.2, ease = "linear" } or nil)
     end
@@ -1527,14 +1189,14 @@ test("a puppet whose setup threw once draws the next slide", function()
       end
       return ag
     end
-    combat = true
+    wow.combat = true
     m:to({ x = 100 }, { duration = 0.1 })
     run(0.2)
     takeReports(1)
     m:to({ x = 70 }, { duration = 0.1 })
     run(0.3)
     assert(f:VisualX() == 80 and m:get("x") == 70 and not m:isMoving(), method .. ": recovered slide drew at " .. f:VisualX())
-    combat = false
+    wow.combat = false
     fire("PLAYER_REGEN_ENABLED")
     assert(f.points[1][4] == 80 and f:VisualX() == 80, method .. ": combat end lost the slide")
   end
@@ -1589,7 +1251,7 @@ test("a call from a lock-check hook in the driver waits for the update", functio
   local m, order = Poly(f), {}
   m:to({ x = 50 })
   run(1 / 60)
-  combat = true
+  wow.combat = true
   local isProtected, setPoint = f.IsProtected, f.SetPoint
   local armed = true
   function f:IsProtected()
@@ -1598,7 +1260,7 @@ test("a call from a lock-check hook in the driver waits for the update", functio
   end
   function f:SetAlpha(a) order[#order + 1] = "alpha"; self.alpha = a end
   run(1 / 60)
-  combat = false
+  wow.combat = false
   f.IsProtected, f.SetPoint = isProtected, setPoint
   assert(order[1] == "check" and order[2] == "alpha", "the hook's call ran inside the lock check")
 end)
@@ -1608,13 +1270,13 @@ test("a lock check that throws at a native start halts that frame only", functio
   Poly(f):to({ alpha = 0.2 }, { duration = 0.2, ease = "linear" })
   Poly(g):to({ alpha = 0.2 }, { duration = 0.2, ease = "linear" })
   run(1 / 60) -- the start timer runs at the start of the next frame
-  combat = true -- and checks the lock again
+  wow.combat = true -- and checks the lock again
   local isProtected = f.IsProtected
   function f:IsProtected() error("test: IsProtected hook") end
   run(1 / 60)
   takeReports(1)
   f.IsProtected = isProtected
-  combat = false
+  wow.combat = false
   assert(not Poly(f):isMoving(), "the failing frame kept its track")
   run(0.5)
   assert(g:VisualAlpha() == 0.2 and not Poly(g):isMoving(), "the other frame's start was lost")
@@ -1828,14 +1490,14 @@ test("a halt stops every group even when a Stop() hook throws", function()
   throwOnStop(f, function() return armed end)
   m:to({ x = 100, y = 60, alpha = 0.5 }, { duration = 2, ease = "linear" })
   run(0.05)
-  combat, armed = true, true
+  wow.combat, armed = true, true
   m:to({ scale = 1.2 }) -- the puppet takes x and y over, and stopping their groups throws
   run(1 / 60)
   takeReports(2)
   armed = false
   local nx, ny, k, _, drawnAlpha = f:Native()
   assert(nx == 0 and ny == 0 and k == 1 and drawnAlpha == nil and not m:isMoving(), "halt left a group drawing")
-  combat = false
+  wow.combat = false
 end)
 
 test("reentrant hooks on animation writers keep the last call", function()
@@ -1887,7 +1549,7 @@ test("reentrant hooks on animation writers keep the last call", function()
         return ag
       end
       local hasNative = path:find("native", 1, true)
-      combat = path ~= "native" and not hasNative
+      wow.combat = path ~= "native" and not hasNative
       -- For commit and halt, install the mutating hook only after the puppet
       -- exists. Reads still run during every setup call.
       local enabled = path == "native" or path == "puppet"
@@ -1905,8 +1567,8 @@ test("reentrant hooks on animation writers keep the last call", function()
         f:SetPoint("CENTER", nil, "CENTER", 200, 90)
         m:get("x")
       elseif path == "handoff native" then
-        combat = true; m:to({ scale = 1.1 }); run(1 / 60)
-      elseif path == "commit" then combat = false; fire("PLAYER_REGEN_ENABLED")
+        wow.combat = true; m:to({ scale = 1.1 }); run(1 / 60)
+      elseif path == "commit" then wow.combat = false; fire("PLAYER_REGEN_ENABLED")
       elseif path == "halt" then
         local original = f.SetAlpha
         function f:SetAlpha() error("test: animation hook halt") end
@@ -1914,7 +1576,7 @@ test("reentrant hooks on animation writers keep the last call", function()
         takeReports(1)
         f.SetAlpha = original
       end
-      combat = false
+      wow.combat = false
       fire("PLAYER_REGEN_ENABLED")
       run(0.5)
       if nested and path == "halt" then
@@ -1949,19 +1611,19 @@ test("an error handler can start fresh work after every halt path", function()
         end })
       end
     end
-    combat = path == "combat end" or path == "driver in combat"
+    wow.combat = path == "combat end" or path == "driver in combat"
     m:to({ x = 100, scale = 1.2 }, { duration = 0.2, ease = path == "native start" and "linear" or "outCubic" })
-    if combat then run(0.05) end
+    if wow.combat then run(0.05) end
     if path == "driver in combat" then
       function f:SetAlpha() error("test: alpha hook") end
       m:to({ alpha = 0.5 })
       run(1 / 60)
     else
       function f:SetPoint() error("test: anchor hook") end
-      if path == "combat end" then combat = false; fire("PLAYER_REGEN_ENABLED") else run(2 / 60) end
+      if path == "combat end" then wow.combat = false; fire("PLAYER_REGEN_ENABLED") else run(2 / 60) end
     end
     _G.geterrorhandler = getHandler
-    combat = false
+    wow.combat = false
     fire("PLAYER_REGEN_ENABLED")
     run(0.5)
     assert(reports == 1 and done == 1 and f.w == 310 and not m:isMoving(), path .. ": handler's fresh work was halted")
@@ -2020,11 +1682,11 @@ end)
 
 test("protected frame: hide fades in combat and hides after", function()
   local f = fakeFrame(true)
-  combat = true
+  wow.combat = true
   Poly(f):hide("below", { duration = 0.2 })
   run(0.5)
   assert(f.alpha == 0 and f.shown and f.pointCalls == 0, "hide broke lockdown rules")
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(not f.shown, "not hidden after combat")
 end)
@@ -2032,11 +1694,11 @@ end)
 test("protected frame: show while hidden in combat waits for combat end", function()
   local f = fakeFrame(true)
   f.shown = false
-  combat = true
+  wow.combat = true
   Poly(f):show("fade", { duration = 0.1 })
   run(0.3)
   assert(not f.shown, "shown during lockdown")
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(0.3)
   assert(f.shown and f.alpha == 1, "not shown after combat")
@@ -2057,12 +1719,12 @@ end)
 test("protected frame: a hide after a deferred show wins", function()
   local f = fakeFrame(true)
   f.shown = false
-  combat = true
+  wow.combat = true
   local m = Poly(f)
   m:show("fade", { duration = 0.1 })
   m:hide("fade", { duration = 1 })
   run(0.2)
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   run(1.5)
   assert(not f.shown, "deferred show ran after a later hide")
@@ -2135,39 +1797,39 @@ end)
 
 test("protected frame: set() during a deferred hide keeps its value", function()
   local f = fakeFrame(true)
-  combat = true
+  wow.combat = true
   local m = Poly(f)
   m:hide("fade", { duration = 0.1 })
   run(0.3)
   m:set({ alpha = 0.4 })
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(not f.shown and near(f.alpha, 0.4, 1 / 510), "deferred hide reset a taken-over alpha: " .. f.alpha)
 end)
 
 test("protected frame: to() during a deferred hide keeps its value", function()
   local f = fakeFrame(true)
-  combat = true
+  wow.combat = true
   local m = Poly(f)
   m:hide("fade", { duration = 0.1 })
   run(0.3)
   m:to({ alpha = 0.4 }, { duration = 0.1 })
   run(0.3)
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(not f.shown and near(f.alpha, 0.4, 1 / 510), "deferred hide reset a taken-over alpha: " .. f.alpha)
 end)
 
 test("stop() releases a property that already arrived away from rest", function()
   local f = fakeFrame(true)
-  combat = true
+  wow.combat = true
   local m = Poly(f)
   m:hide("below", { duration = 0.1 })
   run(0.3)
   m:stop("y")
   m:hide("fade", { duration = 0.1 })
   run(0.3)
-  combat = false
+  wow.combat = false
   fire("PLAYER_REGEN_ENABLED")
   assert(not f.shown and m:get("y") == -16, "hide reset a stopped y: " .. m:get("y"))
 end)
@@ -2203,7 +1865,7 @@ test("random show/hide sequences end where the last calls say", function()
     local owner = {} -- name -> "vis", or { value } once the caller owns it
     local lastVis, deferredShow
     local log = {}
-    local function locked() return combat and protected end
+    local function locked() return wow.combat and protected end
     local function visTakes(away)
       for name in pairs(away) do owner[name] = "vis" end
     end
@@ -2246,9 +1908,9 @@ test("random show/hide sequences end where the last calls say", function()
           if n == name or not name then owner[n] = { (m:get(n)) } end
         end
       elseif op == 6 then
-        log[#log + 1] = combat and "combat ends" or "combat starts"
-        combat = not combat
-        if not combat then
+        log[#log + 1] = wow.combat and "combat ends" or "combat starts"
+        wow.combat = not wow.combat
+        if not wow.combat then
           if deferredShow then show(deferredShow); deferredShow = nil end
           fire("PLAYER_REGEN_ENABLED")
         end
@@ -2258,8 +1920,8 @@ test("random show/hide sequences end where the last calls say", function()
         run(t)
       end
     end
-    if combat then
-      combat = false
+    if wow.combat then
+      wow.combat = false
       if deferredShow then show(deferredShow) end
       fire("PLAYER_REGEN_ENABLED")
     end
@@ -2285,13 +1947,13 @@ end)
 
 test("a texture of a protected frame in combat is not locked: its own IsProtected() decides", function()
   local tex = fakeRegion(fakeFrame(true))
-  combat = true
+  wow.combat = true
   Poly(tex):to({ alpha = 0.5, x = 30, width = 160 }, { duration = 0.2 })
   run(0.5)
   assert(near(tex.alpha, 0.5, 0.002) and tex.points[1][4] == 40 and tex.w == 160, "waited for combat to end")
   Poly(tex):hide("fade", { duration = 0.2 })
   run(0.5)
-  combat = false
+  wow.combat = false
   assert(not tex.shown, "Hide waited for combat to end")
 end)
 
@@ -2418,7 +2080,7 @@ test("example color fade: one SetVertexColor per update, retargets smoothly, run
   local calls, setColor = 0, tex.SetVertexColor
   function tex:SetVertexColor(...) calls = calls + 1; setColor(self, ...) end
   local tint = example("ColorFade")(tex)
-  combat = true -- the writer is allowed in combat, so the fade runs there
+  wow.combat = true -- the writer is allowed in combat, so the fade runs there
   tint(1, 0.2, 0.2, { duration = 0.3, ease = "outSine" })
   run(0.1)
   local r, g, b = unpack(tex.color)
@@ -2427,7 +2089,7 @@ test("example color fade: one SetVertexColor per update, retargets smoothly, run
   tint(0, 0, 1, { duration = 0.3 })
   assert(Poly(tex):get("g") == g, "jump on retarget")
   run(0.5)
-  combat = false
+  wow.combat = false
   r, g, b = unpack(tex.color)
   assert(r == 0 and g == 0 and b == 1, "did not land on blue")
 end)

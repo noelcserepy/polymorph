@@ -2,6 +2,8 @@
 -- Usage: lua tools/bench.lua Polymorph.lua [fps]   (default 120)
 -- Frames are minimal fakes whose methods only store a value. "Lua µs" is
 -- Polymorph's own Lua on this machine, so compare runs on one machine only.
+-- They model no client behavior: the tests' client model, tests/fake_wow.lua,
+-- added about 40% to "Lua µs" when it stood in for these (2026-10-16).
 -- "calls" counts game API calls per track per update. "est. game µs" prices
 -- those calls with costs measured in the client (WoW Forever 1.60.1, 2026-10-14)
 -- and adds the Lua time, so it is an estimate, not a measurement. Per-call cost
