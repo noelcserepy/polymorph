@@ -6,6 +6,7 @@
 --   wow.combat         InCombatLockdown()'s answer
 --   wow.run(s, fps)    runs frames for s seconds
 --   wow.fire(event)    runs the OnEvent handlers registered for event
+--   wow.updating()     how many regions have an OnUpdate script set
 --   wow.blocked(r, m)  called for a call the client blocks, which is then skipped. Errors by default.
 --   wow.lenient        when true, methods the fake doesn't model are no-ops
 --   wow.realFormat     string.format without the 32-bit %d limit
@@ -196,6 +197,13 @@ end
 -- Timer callbacks run before OnUpdate scripts: start_timing.lua, 2026-10-15
 -- (60 of 60 frames, against one probe OnUpdate). Event code runs before the
 -- frame's timers and OnUpdates: UNMEASURED.
+-- How many regions have an OnUpdate script set.
+function wow.updating()
+  local n = 0
+  for _ in pairs(updating) do n = n + 1 end
+  return n
+end
+
 function wow.run(seconds, fps)
   local dt = 1 / (fps or 60)
   for _ = 1, math.floor(seconds / dt + 0.5) do
@@ -258,8 +266,11 @@ end
 function Region:CreateTexture() return newRegion("Texture", self, false, false) end
 function Region:CreateFontString() return newRegion("FontString", self, false, false) end
 -- IsObjectType("Frame") is false for textures and font strings: regions.lua, 2026-10-15.
+-- IsObjectType() is true for a frame's own kind: UNMEASURED.
 function Region:IsObjectType(kind) return kind == self.kind or (kind == "Frame" and self.isFrame) end
+-- GetParent() returns the parent the region was made with: UNMEASURED.
 function Region:GetParent() return self.parent end
+-- IsProtected(): measured with the lock, above.
 function Region:IsProtected() return self.protected end
 
 -- Alpha is stored in steps of 1/255, so SetAlpha(0.5) reads 0.50196: anchors_probe.lua, 2026-10-15.
@@ -288,6 +299,7 @@ function Region:SetHeight(h) if allowed(self, "SetHeight") then self.h = h end e
 function Region:SetScale(s) if allowed(self, "SetScale") then self.s = s end end
 function Region:GetWidth() return self.w end
 function Region:GetHeight() return self.h end
+-- GetSize() returns GetWidth() and GetHeight(): UNMEASURED.
 function Region:GetSize() return self.w, self.h end
 function Region:GetScale() return self.s end
 
@@ -315,8 +327,8 @@ function Region:SetPoint(point, ...)
 end
 -- Moving both anchors of a two-anchor frame by the same offset keeps its
 -- width: anchors_probe.lua, 2026-10-15. The fake keeps width as a field, which agrees.
--- In the client SetAllPoints sets TOPLEFT and BOTTOMRIGHT. Here it sets
--- TOPLEFT only, since sizes from two anchors aren't modelled.
+-- SetAllPoints anchors TOPLEFT and BOTTOMRIGHT to the relative frame: UNMEASURED.
+-- Here it sets TOPLEFT only, since sizes from two anchors aren't modelled.
 function Region:SetAllPoints(rel) self:SetPoint("TOPLEFT", rel or self.parent, "TOPLEFT", 0, 0) end
 -- ClearAllPoints() removes every point: anchors_probe.lua, 2026-10-15. Blocked on a locked frame: UNMEASURED.
 function Region:ClearAllPoints() if allowed(self, "ClearAllPoints") then self.points = {} end end
@@ -337,20 +349,24 @@ end
 -- IsShown() reports the region's own flag, and IsVisible() also needs every parent shown: UNMEASURED.
 function Region:Show() if allowed(self, "Show") then self.shown = true end end
 function Region:Hide() if allowed(self, "Hide") then self.shown = false end end
+-- SetShown(v) acts as Show() or Hide(), blocked the same way: UNMEASURED.
 function Region:SetShown(v) if v then self:Show() else self:Hide() end end
 function Region:IsShown() return self.shown end
 function Region:IsVisible() return self.shown and (not self.parent or self.parent:IsVisible()) end
 
--- Scripts and events. Not client measurements: the harness's plumbing.
+-- Scripts and events. SetScript replaces the handler and GetScript returns
+-- it: UNMEASURED. OnUpdate runs while one is set (see wow.run).
 function Region:SetScript(name, fn)
   self.scripts[name] = fn
   if name == "OnUpdate" then updating[self] = fn and true or nil end
 end
 function Region:GetScript(name) return self.scripts[name] end
+-- HookScript runs the existing handler first, then the hook: UNMEASURED.
 function Region:HookScript(name, fn)
   local old = self.scripts[name]
   self:SetScript(name, old and function(...) old(...); fn(...) end or fn)
 end
+-- RegisterEvent makes the region's OnEvent run for the event (see wow.fire): UNMEASURED.
 function Region:RegisterEvent(e)
   events[e] = events[e] or {}
   table.insert(events[e], self)
@@ -371,7 +387,9 @@ end
 function Region:SetText(text)
   self.text, self.gradient, self.textCallback = text, nil, callback
 end
+-- SetFormattedText(fmt, ...) acts as SetText(fmt:format(...)): UNMEASURED.
 function Region:SetFormattedText(fmt, ...) self:SetText(fmt:format(...)) end
+-- GetText() returns the text set: regions_combat.lua, 2026-10-15 (the counter read back).
 function Region:GetText() return self.text end
 function Region:SetAlphaGradient(start, length)
   if self.textCallback ~= callback then self.gradient = { start, length } end

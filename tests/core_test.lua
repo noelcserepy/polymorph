@@ -45,8 +45,8 @@ end
 local ns = { dev = true }
 assert(loadfile(path))("Polymorph", ns)
 local Poly = ns.Polymorph
--- Whether the driver's OnUpdate is set.
-local function driving() return Poly._driver:GetScript("OnUpdate") ~= nil end
+-- Whether any OnUpdate is set. The tests set none, so this is the driver's.
+local function driving() return wow.updating() > 0 end
 
 local function near(a, b, eps) return math.abs(a - b) <= (eps or 1e-6) end
 local passed = 0
