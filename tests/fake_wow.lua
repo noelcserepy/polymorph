@@ -26,6 +26,7 @@
 -- 2000 animation groups and 500 timers (startup log, 2026-10-14).
 
 local wow = { combat = false, lenient = false }
+-- The client's Lua 5.1 has a global unpack. Newer reference Lua needs this.
 unpack = unpack or table.unpack
 
 -- Deliberate difference: the client returns normally from a blocked call,
@@ -62,6 +63,8 @@ local lenientMeta = { __index = lenientIndex(nil) }
 _G.GetTime = function() return clock end
 -- GetTickTime() equals OnUpdate's elapsed, also in job code and C_Timer callbacks: tick_time.lua, 2026-10-15.
 _G.GetTickTime = function() return tick end
+-- debugprofilestop() returns milliseconds from a high-resolution clock: UNMEASURED.
+-- Here it is this machine's CPU time, which the library only adds to stats().
 _G.debugprofilestop = function() return os.clock() * 1000 end
 
 -- Combat -------------------------------------------------------------------
@@ -86,6 +89,8 @@ end
 
 -- geterrorhandler() returns the handler seterrorhandler() installed, and calling it reports the
 -- error: errors.lua, 2026-10-15.
+-- The client's default handler shows the error and play goes on: UNMEASURED.
+-- The fake's default raises it, so an unexpected error stops the run.
 local errorHandler = function(err) error(err, 0) end
 _G.seterrorhandler = function(fn) errorHandler = fn end
 _G.geterrorhandler = function() return errorHandler end
@@ -103,8 +108,9 @@ local function newTimer(seconds, fn)
   timers[#timers + 1] = t
   return t
 end
+-- An After() callback gets no arguments, and a NewTimer() callback gets its timer: UNMEASURED.
 _G.C_Timer = {
-  After = function(seconds, fn) newTimer(seconds, fn) end,
+  After = function(seconds, fn) newTimer(seconds, function() fn() end) end,
   NewTimer = newTimer,
 }
 local function runTimers()
