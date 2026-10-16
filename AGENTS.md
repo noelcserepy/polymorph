@@ -21,4 +21,4 @@ For a change to the driver's speed, compare `lua tools/bench.lua Polymorph.lua` 
 
 ## Releases
 
-A release is a tag `vX.Y.Z` on main. The PR before it raises `MINOR` in `Polymorph.lua` by one, so LibStub loads the newest embedded copy, and names the version's section in `CHANGELOG.md` `## X.Y.Z (date)`. Run `sh tools/release_check.sh vX.Y.Z` on main, then push the tag. That runs `.github/workflows/release.yml`: the checks, `tools/release_check.sh`, and the BigWigs packager, which makes the GitHub release with `CHANGELOG.md` as its notes. The README's `.pkgmeta` snippet with `tag: latest` pulls the newest tag.
+A release is a tag `vX.Y.Z` on main. The PR before it raises `MINOR` in `Polymorph.lua` by one, so LibStub loads the newest embedded copy, and names the version's section in `CHANGELOG.md` `## X.Y.Z (YYYY-MM-DD)`. Run `sh tools/release_check.sh vX.Y.Z` on main, then push the tag. That runs `.github/workflows/release.yml`: the checks, `tools/release_check.sh`, and the BigWigs packager, which makes the GitHub release with `CHANGELOG.md` as its notes. The README's `.pkgmeta` snippet with `tag: latest` pulls the newest tag.

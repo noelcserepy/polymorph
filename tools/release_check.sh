@@ -9,7 +9,9 @@ fail() { printf 'FAILED: %s\n' "$1" >&2; exit 1; }
 version=${tag#v}
 printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail "tag $tag is not vX.Y.Z"
 
-grep -q "^## $version " CHANGELOG.md || fail "CHANGELOG.md has no '## $version (date)' section"
+# The tag check above leaves only digits and dots, so escaping the dots is enough.
+pattern="^## $(printf '%s' "$version" | sed 's/\./\\./g') \([0-9]{4}-[0-9]{2}-[0-9]{2}\)\$"
+grep -Eq "$pattern" CHANGELOG.md || fail "CHANGELOG.md has no '## $version (YYYY-MM-DD)' section"
 
 minor_of() { sed -n 's/^local MAJOR, MINOR = "Polymorph-1.0", \([0-9]*\).*/\1/p'; }
 minor=$(minor_of < Polymorph.lua)
