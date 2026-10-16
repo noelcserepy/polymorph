@@ -19,7 +19,7 @@
 -- docs/api.md has the details.
 local _, ns = ...
 
-local MAJOR, MINOR = "Polymorph-1.0", 1
+local MAJOR, MINOR = "Polymorph-1.0", 2 -- one more on each release, see AGENTS.md
 local Poly
 if type(ns) == "table" and ns.dev then
   -- Tests and dev tools load a fresh, private copy into ns.Polymorph.

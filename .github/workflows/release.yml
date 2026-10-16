@@ -1,0 +1,29 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The packager and tools/release_check.sh read earlier tags.
+          fetch-depth: 0
+      - uses: leafo/gh-actions-lua@v10
+        with:
+          luaVersion: "5.1.5"
+      - name: Checks
+        run: sh tools/check.sh lua
+      - name: Release check
+        run: sh tools/release_check.sh "$GITHUB_REF_NAME"
+      # Builds Polymorph-<tag>.zip with LibStub from .pkgmeta and makes the GitHub
+      # release, with CHANGELOG.md as its notes.
+      - uses: BigWigsMods/packager@v2

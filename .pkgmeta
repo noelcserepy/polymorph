@@ -14,3 +14,7 @@ ignore:
     - tools
     - REVIEW.md
     - skills
+
+manual-changelog:
+    filename: CHANGELOG.md
+    markup-type: markdown
