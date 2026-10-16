@@ -70,7 +70,7 @@ Animate several properties in one call. Each one moves on its own track.
 
 Layouts, frame pools and frame movers, such as AceGUI-3.0, ScrollBox, `CreateFramePool` and LibWindow-1.1, write to the same frames. [Using Polymorph with other code](docs/api.md#using-polymorph-with-other-code) says how Polymorph shares a frame with them: anchors, pools, two-anchor frames, and alpha that a fader also writes.
 
-An error on one frame, from a game call or an `onComplete`, starts only that frame over, and every other frame keeps animating. During a call such as `to()`, the error goes to that call's caller. Otherwise it reaches the game's error handler once.
+An error from a game call on one frame starts only that frame over, and every other frame keeps animating. During a call such as `to()`, the error goes to that call's caller. Otherwise it reaches the game's error handler once, as does an error in an `onComplete`, which stops nothing.
 
 ### Your own values
 
