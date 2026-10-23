@@ -34,15 +34,21 @@ commit() {
 
 # check NAME TAG WANT MINOR HEADING [TAGGED_MINOR [pushed]]
 # "pushed" tags HEAD with TAG first, as the release Action sees it.
+# A WANT that starts with "FAILED:" must exit 1, and any other must exit 0.
 check() {
     count=$((count + 1))
     repo "$count" "$4" "$5" "${6:-}"
     [ "${7:-}" = pushed ] && git -C "$root/$count" tag "$2"
     out=$(cd "$root/$count" && sh "$script" "$2" 2>&1)
+    status=$?
+    case $3 in FAILED:*) want_status=1 ;; *) want_status=0 ;; esac
     case $out in
-        "$3"*) ;;
-        *) failures=$((failures + 1)); printf 'FAILED: %s: want "%s", got "%s"\n' "$1" "$3" "$out" >&2 ;;
-    esac
+        "$3"*) [ "$status" -eq "$want_status" ] ;;
+        *) false ;;
+    esac || {
+        failures=$((failures + 1))
+        printf 'FAILED: %s: want exit %s and "%s", got exit %s and "%s"\n' "$1" "$want_status" "$3" "$status" "$out" >&2
+    }
 }
 
 no_section="FAILED: CHANGELOG.md has no"
