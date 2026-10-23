@@ -35,3 +35,6 @@ for interpreter do
     run_step core_test "$interpreter" tests/core_test.lua Polymorph.lua
     run_step skill_check_selftest "$interpreter" tools/skill_check_selftest.lua Polymorph.lua
 done
+
+interpreter=sh
+run_step release_check_selftest sh tools/release_check_selftest.sh
